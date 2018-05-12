@@ -54,6 +54,7 @@ type
     mnuAccountsPopup: TPopupMenu;
     mnuOperationsPopup: TPopupMenu;
     mnuFirstAccountPopup: TPopupMenu;
+    DelayedFormResize: TTimer;
     procedure cbAccountsChange(Sender: TObject);
     procedure cmbDurationChange(Sender: TObject);
     procedure FormCreate(Sender: TObject);
@@ -66,6 +67,7 @@ type
     procedure miSendPASCClick(Sender: TObject);
     procedure miEnlistAccountsForSaleClick(Sender: TObject);
     procedure miDelistAccountsFromSaleClick(Sender: TObject);
+    procedure DelayedFormResizeTimer(Sender: TObject);
   private
     FNodeNotifyEvents: TNodeNotifyEvents;
     FAccountsMode: TCTRLWalletAccountsMode;
@@ -295,16 +297,8 @@ begin
 end;
 
 procedure TCTRLWallet.FormResize(Sender: TObject);
-var x : integer;
 begin
-  // Grid data-sources are set here on "first form resize" in order to avoid
-  // excessive datasource fetching during initialising sequence. Note, grid
-  // refreshes on size changed, blockchain activity and when assigned to grid
-  if NOT Assigned(FAccountsGrid.DataSource) then
-    FAccountsGrid.DataSource := FAccountsDataSource;
-
-  if NOT Assigned(FOperationsGrid.DataSource) then
-    FOperationsGrid.DataSource := FOperationsDataSource;
+  DelayedFormResize.Enabled := true;
 end;
 
 procedure TCTRLWallet.ActivateFirstTime;
@@ -642,6 +636,20 @@ end;
 procedure TCTRLWallet.miDelistAccountsFromSaleClick(Sender: TObject);
 begin
   raise ENotImplemented.Create('not yet implemented.');
+end;
+
+procedure TCTRLWallet.DelayedFormResizeTimer(Sender: TObject);
+begin
+  // Grid data-sources are set here on "first form resize" in order to avoid
+  // excessive datasource fetching during initialising sequence. Note, grid
+  // refreshes on size changed, blockchain activity and when assigned to grid
+  if NOT Assigned(FAccountsGrid.DataSource) then
+    FAccountsGrid.DataSource := FAccountsDataSource;
+
+  if NOT Assigned(FOperationsGrid.DataSource) then
+    FOperationsGrid.DataSource := FOperationsDataSource;
+
+  DelayedFormResize.Enabled := false;
 end;
 
 procedure TCTRLWallet.OnPrepareOperationsPopupMenu(Sender: TObject; constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);

@@ -208,4 +208,10 @@ object CTRLWallet: TCTRLWallet
     left = 1024
     top = 64
   end
+  object DelayedFormResize: TTimer
+    Interval = 100
+    OnTimer = DelayedFormResizeTimer
+    left = 990
+    top = 246
+  end
 end
