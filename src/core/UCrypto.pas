@@ -70,11 +70,13 @@ Type
   public
     class function IsHexString(const AHexString: AnsiString) : boolean;
     class function ToHexaString(const raw : TRawBytes) : AnsiString;
-    class function HexaToRaw(const HexaString : AnsiString) : TRawBytes;
+    class function HexaToRaw(const HexaString : AnsiString) : TRawBytes; overload;
+    class function HexaToRaw(const HexaString : AnsiString; out raw : TRawBytes) : Boolean; overload;
     class function DoSha256(p : PAnsiChar; plength : Cardinal) : TRawBytes; overload;
     class function DoSha256(const TheMessage : AnsiString) : TRawBytes; overload;
-    class procedure DoSha256(const TheMessage : AnsiString; var ResultSha256 : TRawBytes);  overload;
-    class procedure DoDoubleSha256(p : PAnsiChar; plength : Cardinal; Var ResultSha256 : TRawBytes); overload;
+    class procedure DoSha256(const TheMessage : AnsiString; out ResultSha256 : TRawBytes);  overload;
+    class function DoDoubleSha256(const TheMessage : AnsiString) : TRawBytes; overload;
+    class procedure DoDoubleSha256(p : PAnsiChar; plength : Cardinal; out ResultSha256 : TRawBytes); overload;
     class function DoRipeMD160_HEXASTRING(const TheMessage : AnsiString) : TRawBytes; overload;
     class function DoRipeMD160AsRaw(p : PAnsiChar; plength : Cardinal) : TRawBytes; overload;
     class function DoRipeMD160AsRaw(const TheMessage : AnsiString) : TRawBytes; overload;
@@ -84,6 +86,8 @@ Type
     class function ECDSAVerify(PubKey : TECDSA_Public; const digest : AnsiString; Signature : TECDSA_SIG) : Boolean; overload;
     class procedure InitCrypto;
     class function IsHumanReadable(Const ReadableText : TRawBytes) : Boolean;
+    class function EncodeSignature(const signature : TECDSA_SIG) : TRawBytes;
+    class function DecodeSignature(const rawSignature : TRawBytes; out signature : TECDSA_SIG) : Boolean;
   End;
 
   TBigNum = Class
@@ -128,6 +132,7 @@ Type
 
 Const
   CT_TECDSA_Public_Nul : TECDSA_Public = (EC_OpenSSL_NID:0;x:'';y:'');
+  CT_TECDSA_SIG_Nul : TECDSA_SIG = (r:'';s:'');
 
 implementation
 
@@ -137,10 +142,27 @@ uses
 Var _initialized : Boolean = false;
 
 Procedure _DoInit;
+var err : String;
+ c : Cardinal;
 Begin
   if Not (_initialized) then begin
     _initialized := true;
-    InitSSLFunctions;
+    If Not InitSSLFunctions then begin
+      err := 'Cannot load OpenSSL library '+SSL_C_LIB;
+      TLog.NewLog(ltError,'OpenSSL',err);
+      Raise Exception.Create(err);
+    end;
+    If Not Assigned(OpenSSL_version_num) then begin
+      err := 'OpenSSL library is not v1.1 version: '+SSL_C_LIB;
+      TLog.NewLog(ltError,'OpenSSL',err);
+      Raise Exception.Create(err);
+    end;
+    c := OpenSSL_version_num;
+    if (c<$10100000) Or (c>$1010FFFF) then begin
+      err := 'OpenSSL library is not v1.1 version ('+IntToHex(c,8)+'): '+SSL_C_LIB;
+      TLog.NewLog(ltError,'OpenSSL',err);
+      Raise Exception.Create(err);
+    end;
   end;
 End;
 
@@ -262,14 +284,19 @@ Var BNx,BNy : PBIGNUM;
   ctx : PBN_CTX;
   pub_key : PEC_POINT;
 begin
+  Result := False;
   BNx := BN_bin2bn(PAnsiChar(PubKey.x),length(PubKey.x),nil);
+  if Not Assigned(BNx) then Exit;
   try
     BNy := BN_bin2bn(PAnsiChar(PubKey.y),length(PubKey.y),nil);
+    if Not Assigned(BNy) then Exit;
     try
       ECG := EC_GROUP_new_by_curve_name(PubKey.EC_OpenSSL_NID);
+      if Not Assigned(ECG) then Exit;
       try
         pub_key := EC_POINT_new(ECG);
         try
+          if Not Assigned(pub_key) then Exit;
           ctx := BN_CTX_new;
           try
             Result := EC_POINT_set_affine_coordinates_GFp(ECG,pub_key,BNx,BNy,ctx)=1;
@@ -333,15 +360,18 @@ end;
   Note: Delphi is slowly when working with Strings (allowing space)... so to
   increase speed we use a String as a pointer, and only increase speed if
   needed. Also the same with functions "GetMem" and "FreeMem" }
-class procedure TCrypto.DoDoubleSha256(p: PAnsiChar; plength: Cardinal;
-  Var ResultSha256: TRawBytes);
+class procedure TCrypto.DoDoubleSha256(p: PAnsiChar; plength: Cardinal; out ResultSha256: TRawBytes);
 Var PS : PAnsiChar;
-  PC : PAnsiChar;
 begin
   If length(ResultSha256)<>32 then SetLength(ResultSha256,32);
   PS := @ResultSha256[1];
   SHA256(p,plength,PS);
   SHA256(PS,32,PS);
+end;
+
+class function TCrypto.DoDoubleSha256(const TheMessage: AnsiString): TRawBytes;
+begin
+  Result := DoSha256(DoSha256(TheMessage));
 end;
 
 class function TCrypto.DoRipeMD160_HEXASTRING(const TheMessage: AnsiString): TRawBytes;
@@ -396,9 +426,8 @@ end;
   Note: Delphi is slowly when working with Strings (allowing space)... so to
   increase speed we use a String as a pointer, and only increase speed if
   needed. Also the same with functions "GetMem" and "FreeMem" }
-class procedure TCrypto.DoSha256(const TheMessage: AnsiString; var ResultSha256: TRawBytes);
+class procedure TCrypto.DoSha256(const TheMessage: AnsiString; out ResultSha256: TRawBytes);
 Var PS : PAnsiChar;
-  PC : PAnsiChar;
 begin
   If length(ResultSha256)<>32 then SetLength(ResultSha256,32);
   PS := @ResultSha256[1];
@@ -521,6 +550,24 @@ begin
   end;
 end;
 
+class function TCrypto.HexaToRaw(const HexaString: AnsiString; out raw: TRawBytes): Boolean;
+Var P : PAnsiChar;
+ lc : AnsiString;
+ i : Integer;
+begin
+  Result := False; raw := '';
+  if ((length(HexaString) MOD 2)<>0) then Exit;
+  if (length(HexaString)=0) then begin
+    Result := True;
+    exit;
+  end;
+  SetLength(raw,length(HexaString) DIV 2);
+  P := @raw[1];
+  lc := LowerCase(HexaString);
+  i := HexToBin(PAnsiChar(@lc[1]),P,length(raw));
+  Result := (i = (length(HexaString) DIV 2));
+end;
+
 class procedure TCrypto.InitCrypto;
 begin
   _DoInit;
@@ -535,6 +582,37 @@ Begin
       Result := false;
       Exit;
     end;
+  end;
+end;
+
+class function TCrypto.EncodeSignature(const signature: TECDSA_SIG): TRawBytes;
+Var ms : TStream;
+begin
+  ms := TMemoryStream.Create;
+  Try
+    TStreamOp.WriteAnsiString(ms,signature.r);
+    TStreamOp.WriteAnsiString(ms,signature.s);
+    Result := TStreamOp.SaveStreamToRaw(ms);
+  finally
+    ms.Free;
+  end;
+end;
+
+class function TCrypto.DecodeSignature(const rawSignature : TRawBytes; out signature : TECDSA_SIG) : Boolean;
+var ms : TStream;
+begin
+  signature := CT_TECDSA_SIG_Nul;
+  Result := False;
+  ms := TMemoryStream.Create;
+  Try
+    TStreamOp.LoadStreamFromRaw(ms,rawSignature);
+    ms.Position:=0;
+    if TStreamOp.ReadAnsiString(ms,signature.r)<0 then Exit;
+    if TStreamOp.ReadAnsiString(ms,signature.s)<0 then Exit;
+    if ms.Position<ms.Size then Exit; // Invalid position
+    Result := True;
+  finally
+    ms.Free;
   end;
 end;
 

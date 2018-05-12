@@ -1,0 +1,82 @@
+object WIZOperationFee_Custom: TWIZOperationFee_Custom
+  Left = 0
+  Height = 253
+  Top = 0
+  Width = 429
+  ActiveControl = fseFee
+  Caption = 'WIZOperationFee_Custom'
+  ClientHeight = 253
+  ClientWidth = 429
+  LCLVersion = '1.8.2.0'
+  Visible = False
+  object gbTransactionFee: TGroupBox
+    Left = 14
+    Height = 232
+    Top = 8
+    Width = 400
+    Anchors = [akTop, akLeft, akRight, akBottom]
+    Caption = 'Operation Fee'
+    ClientHeight = 212
+    ClientWidth = 396
+    TabOrder = 0
+    object fseFee: TFloatSpinEdit
+      Left = 11
+      Height = 23
+      Top = 35
+      Width = 173
+      DecimalPlaces = 4
+      Increment = 0.0001
+      MaxValue = 1
+      MinValue = 0
+      OnChange = fseFeeChange
+      TabOrder = 0
+      Value = 0
+    end
+    object lblNote1: TLabel
+      Left = 11
+      Height = 15
+      Top = 8
+      Width = 207
+      Caption = 'Please enter the fee for this transaction.'
+      ParentColor = False
+    end
+    object lblNote2: TLabel
+      Left = 11
+      Height = 30
+      Top = 88
+      Width = 378
+      Caption = 'NOTE: if you are sending from multiple accounts, the fee is required for '#13#10'each sender account '
+      ParentColor = False
+    end
+    object lblPASC: TLabel
+      Left = 192
+      Height = 15
+      Top = 40
+      Width = 28
+      Caption = 'PASC'
+      Font.Style = [fsBold]
+      ParentColor = False
+      ParentFont = False
+    end
+    object lblestimatedfee: TLabel
+      Left = 11
+      Height = 15
+      Top = 66
+      Width = 190
+      Caption = 'Estimated Fee For All Transcations:'
+      Font.Style = [fsBold]
+      ParentColor = False
+      ParentFont = False
+    end
+    object lblTotalFeeValue: TLabel
+      Left = 208
+      Height = 15
+      Top = 66
+      Width = 28
+      Caption = 'xxxx'
+      Font.Style = [fsBold]
+      ParentColor = False
+      ParentFont = False
+    end
+  end
+end

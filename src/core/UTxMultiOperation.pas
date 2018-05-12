@@ -101,11 +101,12 @@ Type
     FTotalAmount : Int64;
     FTotalFee : Int64;
     Function IndexOfAccountChangeNameTo(const newName : AnsiString) : Integer;
+    procedure ClearSignatures;
   protected
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
-    procedure FillOperationResume(Block : Cardinal; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
 
@@ -118,30 +119,35 @@ Type
     Function DoSignMultiOperationSigner(SignerAccount : Cardinal; key : TECPrivateKey) : Integer;
     class function OpType : Byte; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
+    procedure SignerAccounts(list : TList); override;
     function IsSignerAccount(account : Cardinal) : Boolean; override;
     function DestinationAccount : Int64; override;
     function SellerAccount : Int64; override;
     function N_Operation : Cardinal; override;
     function GetAccountN_Operation(account : Cardinal) : Cardinal; override;
+    function OperationAmountByAccount(account : Cardinal) : Int64; override;
     //
     Constructor CreateMultiOperation(const senders : TMultiOpSenders; const receivers : TMultiOpReceivers; const changes : TMultiOpChangesInfo; const senders_keys, changes_keys: Array of TECPrivateKey);
     Destructor Destroy; override;
     Function AddTx(const senders : TMultiOpSenders; const receivers : TMultiOpReceivers; setInRandomOrder : Boolean) : Boolean;
-    Function AddChangeInfo(const changes : TMultiOpChangesInfo; setInRandomOrder : Boolean) : Boolean;
+    Function AddChangeInfos(const changes : TMultiOpChangesInfo; setInRandomOrder : Boolean) : Boolean;
+    Function AddTxSender(const sender : TMultiOpSender) : Boolean;
+    Function AddTxReceiver(const receiver : TMultiOpReceiver) : Boolean;
+    Function AddChangeInfo(const changeInfo : TMultiOpChangeInfo) : Boolean;
     //
     Function IndexOfAccountSender(nAccount : Cardinal) : Integer; overload;
     class Function IndexOfAccountSender(nAccount : Cardinal; startPos : Integer; const txSenders : TMultiOpSenders) : Integer; overload;
     Function IndexOfAccountReceiver(nAccount : Cardinal; startPos : Integer) : Integer;
     Function IndexOfAccountChanger(nAccount : Cardinal) : Integer; overload;
     class Function IndexOfAccountChanger(nAccount : Cardinal; startPos : Integer; const changesInfo : TMultiOpChangesInfo) : Integer; overload;
+    class Function OpChangeAccountInfoTypesToText(const OpChangeAccountInfoTypes : TOpChangeAccountInfoTypes) : AnsiString;
     //
     Function toString : String; Override;
     Property Data : TOpMultiOperationData read FData;
   End;
-
 
 implementation
 
@@ -184,12 +190,53 @@ begin
   Result := -1;
 end;
 
-procedure TOpMultiOperation.FillOperationResume(Block : Cardinal; Affected_account_number : Cardinal; var OperationResume : TOperationResume);
+class function TOpMultiOperation.OpChangeAccountInfoTypesToText(const OpChangeAccountInfoTypes: TOpChangeAccountInfoTypes): AnsiString;
+Var opcit : TOpChangeAccountInfoType;
 begin
-  inherited FillOperationResume(Block, Affected_account_number, OperationResume);
+  Result := '';
+  for opcit:=Low(opcit) to High(opcit) do begin
+    if opcit in OpChangeAccountInfoTypes then begin
+      If Result<>'' then Result := Result +',';
+      Result := Result + CT_TOpChangeAccountInfoType_Txt[opcit];
+    end;
+  end;
+end;
+
+procedure TOpMultiOperation.FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume);
+Var iSender,iReceiver,iChanger : Integer;
+  changerTxt : AnsiString;
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  OperationResume.isMultiOperation:=True;
+
   OperationResume.Senders := FData.txSenders;
   OperationResume.Receivers := FData.txReceivers;
   OperationResume.Changers := FData.changesInfo;
+  if (getInfoForAllAccounts) then begin
+    OperationResume.OperationTxt := ToString;
+    OperationResume.Amount := OperationAmount;
+    OperationResume.Fee := OperationFee * (-1);
+    OperationResume.OpSubtype := CT_OpSubtype_MultiOperation_Global;
+  end else begin
+    OperationResume.OpSubtype := CT_OpSubtype_MultiOperation_AccountInfo;
+    OperationResume.Fee := 0;
+    OperationResume.Amount := OperationAmountByAccount(Affected_account_number);
+    // Set Text and OpSubtype based on Affected_account_number
+    iSender := (IndexOfAccountSender(Affected_account_number));
+    iReceiver := (IndexOfAccountReceiver(Affected_account_number,0));
+    iChanger := (IndexOfAccountChanger(Affected_account_number));
+    if (iChanger>=0) then begin
+      changerTxt:='Changes ['+OpChangeAccountInfoTypesToText(FData.changesInfo[iChanger].Changes_type)+']';
+    end else changerTxt:='';
+    if (iSender>=0) then begin
+      // Is a Sender account
+      OperationResume.OperationTxt:='Multi Tx-Out '+TAccountComp.FormatMoney(OperationResume.Amount * (-1))+' PASC from '+TAccountComp.AccountNumberToAccountTxtNumber(Affected_account_number)+' '+changerTxt;
+    end else if (iReceiver>=0) then begin
+      OperationResume.OperationTxt:='Multi Tx-In '+TAccountComp.FormatMoney(OperationResume.Amount)+' PASC to '+TAccountComp.AccountNumberToAccountTxtNumber(Affected_account_number)+' '+changerTxt;
+    end else begin
+      OperationResume.OperationTxt:='Multi '+changerTxt+' to '+TAccountComp.AccountNumberToAccountTxtNumber(Affected_account_number);
+    end;
+  end;
 end;
 
 function TOpMultiOperation.IndexOfAccountChangeNameTo(const newName: AnsiString): Integer;
@@ -201,6 +248,17 @@ begin
     end;
   end;
   Result := -1;
+end;
+
+procedure TOpMultiOperation.ClearSignatures;
+var i : Integer;
+begin
+  for i:=0 to High(FData.txSenders) do begin
+    FData.txSenders[i].Signature := CT_TECDSA_SIG_Nul;
+  end;
+  for i:=0 to High(FData.changesInfo) do begin
+    FData.changesInfo[i].Signature := CT_TECDSA_SIG_Nul;
+  end;
 end;
 
 procedure TOpMultiOperation.InitializeData;
@@ -288,7 +346,6 @@ begin
   SetLength(FData.changesInfo,0);
   FTotalAmount:=0;
   FTotalFee:=0;
-  FSignatureChecked:=False;
   FHasValidSignature:=False;
 
   SetLength(txsenders,0);
@@ -357,7 +414,7 @@ begin
       end;
     end;
     Result := AddTx(txsenders,txreceivers,False); // Important: Set in same order!
-    Result := Result And AddChangeInfo(changes,False); // Important: Set in same order!
+    Result := Result And AddChangeInfos(changes,False); // Important: Set in same order!
   Except
     On E:Exception do begin
       TLog.NewLog(lterror,Self.ClassName,'('+E.ClassName+'):'+E.Message);
@@ -385,7 +442,6 @@ var i : Integer;
   ophtosign : TRawBytes;
 begin
   // Init
-  FSignatureChecked:=True;
   FHasValidSignature:=False;
   SetLength(errors,0);
   // Do check it!
@@ -575,21 +631,16 @@ begin
     end;
   end;
   // Check signatures!
-  If Not FSignatureChecked then begin
-    If Not CheckSignatures(AccountTransaction,errors) then Exit;
-  end else begin
-    If Not FHasValidSignature then begin
-      Errors := 'Not valid signatures found!';
+  If Not CheckSignatures(AccountTransaction,errors) then Exit;
+  // Execute!
+  If (length(senders)>0) then begin
+    If Not AccountTransaction.TransferAmounts(AccountPreviousUpdatedBlock,
+      senders,senders_n_operation,senders_amount,
+      receivers,receivers_amount,errors) then Begin
+      TLog.NewLog(ltError,ClassName,'FATAL ERROR DEV 20180312-1 '+errors); // This must never happen!
+      Raise Exception.Create('FATAL ERROR DEV 20180312-1 '+errors); // This must never happen!
       Exit;
     end;
-  end;
-  // Execute!
-  If Not AccountTransaction.TransferAmounts(AccountPreviousUpdatedBlock,
-    senders,senders_n_operation,senders_amount,
-    receivers,receivers_amount,errors) then Begin
-    TLog.NewLog(ltError,ClassName,'FATAL ERROR DEV 20180312-1 '+errors); // This must never happen!
-    Raise Exception.Create('FATAL ERROR DEV 20180312-1 '+errors); // This must never happen!
-    Exit;
   end;
   for i:=Low(FData.changesInfo) to High(FData.changesInfo) do begin
     chi := FData.changesInfo[i];
@@ -694,7 +745,6 @@ begin
     end;
   end;
   If (Result>0) Then begin
-    FSignatureChecked := False;
     FHasValidSignature := False;
   end;
 end;
@@ -709,10 +759,9 @@ begin
   Result := FTotalAmount;
 end;
 
-function TOpMultiOperation.OperationFee: UInt64;
+function TOpMultiOperation.OperationFee: Int64;
 begin
-  If FTotalFee<0 then Result := 0 // Alert!
-  else Result := FTotalFee;
+  Result := FTotalFee;
 end;
 
 function TOpMultiOperation.OperationPayload: TRawBytes;
@@ -726,6 +775,18 @@ begin
   If length(FData.txSenders)>0 then Result := FData.txSenders[0].Account
   else if (length(FData.changesInfo)>0) then Result := FData.changesInfo[0].Account
   else Result := MaxInt;
+end;
+
+procedure TOpMultiOperation.SignerAccounts(list: TList);
+var i : Integer;
+begin
+  list.Clear;
+  for i := 0 to High(FData.txSenders) do begin
+    list.Add(TObject(FData.txSenders[i].Account));
+  end;
+  for i:= 0 to High(FData.changesInfo) do begin
+    if list.IndexOf(TObject(FData.changesInfo[i].Account))<0 then list.Add(TObject(FData.changesInfo[i].Account));
+  end;
 end;
 
 function TOpMultiOperation.IsSignerAccount(account: Cardinal): Boolean;
@@ -769,6 +830,24 @@ begin
   Result := 0;
 end;
 
+function TOpMultiOperation.OperationAmountByAccount(account: Cardinal): Int64;
+Var i,j : Integer;
+begin
+  Result := 0;
+  i := IndexOfAccountSender(account);
+  if (i>=0) then begin
+    Result := FData.txSenders[i].Amount * (-1);
+  end;
+  j := 0;
+  Repeat
+    i := IndexOfAccountReceiver(account,j);
+    if (i>=0) then begin
+      Result := Result + FData.txReceivers[i].Amount;
+    end;
+    j := i+1;
+  until i<0;
+end;
+
 constructor TOpMultiOperation.CreateMultiOperation(
   const senders: TMultiOpSenders; const receivers: TMultiOpReceivers;
   const changes: TMultiOpChangesInfo; const senders_keys,
@@ -777,9 +856,8 @@ Var i : Integer;
 begin
   inherited Create;
   AddTx(senders,receivers,True);
-  AddChangeInfo(changes,True);
+  AddChangeInfos(changes,True);
   // Protection for "Exit"
-  FSignatureChecked:=True;
   FHasValidSignature:=False;
   If (length(senders_keys)<>length(senders)) then exit; // Cannot sign!
   If (length(changes_keys)<>length(changes)) then exit; // Cannot sign!
@@ -795,8 +873,6 @@ begin
       Exit;
     end;
   end;
-  FSignatureChecked:=False;
-  FHasValidSignature:=False;
 end;
 
 function TOpMultiOperation.AddTx(const senders: TMultiOpSenders; const receivers: TMultiOpReceivers; setInRandomOrder : Boolean) : Boolean;
@@ -817,9 +893,13 @@ begin
     // Allow receivers as a duplicate!
     If (receivers[i].Amount<=0) then Exit; // Must always receive >0
   end;
+  // Max Senders
+  If (length(senders)+length(FData.txSenders)) > CT_MAX_MultiOperation_Senders then Exit;
+  // Max Receivers
+  If (length(receivers)+length(FData.txReceivers)) > CT_MAX_MultiOperation_Receivers then Exit;
+
   // Ok, let's go
   FHasValidSignature:=False;
-  FSignatureChecked:=False;
   If setInRandomOrder then begin
     // Important:
     // When a sender/receiver is added, everybody must sign again
@@ -845,6 +925,7 @@ begin
       FData.txReceivers[j] := receivers[i];
       inc(total_receive,receivers[i].Amount);
     end;
+    ClearSignatures;
   end else begin
     j := length(FData.txSenders);
     SetLength(FData.txSenders,length(FData.txSenders)+length(senders));
@@ -864,8 +945,10 @@ begin
   Result := True;
 end;
 
-function TOpMultiOperation.AddChangeInfo(const changes: TMultiOpChangesInfo; setInRandomOrder : Boolean): Boolean;
+function TOpMultiOperation.AddChangeInfos(const changes: TMultiOpChangesInfo; setInRandomOrder : Boolean): Boolean;
 Var i,j,k : Integer;
+  ct : TOpChangeAccountInfoType;
+  ctypes : TOpChangeAccountInfoTypes;
 begin
   Result := False;
   // Check not duplicate / invalid data
@@ -874,10 +957,21 @@ begin
     If IndexOfAccountChanger(changes[i].Account)>=0 then Exit;
     If IndexOfAccountChanger(changes[i].Account,i+1,changes)>=0 then Exit;
     If (changes[i].Changes_type=[]) then Exit; // Must change something
+    // check valid Change type
+    for ct:=Low(TOpChangeAccountInfoType) to High(TOpChangeAccountInfoType) do begin
+      case ct of
+        public_key,account_name,account_type : ; // Allowed
+      else
+        if (ct in changes[i].Changes_type) then begin
+          Exit; // Not allowed multioperation change type
+        end;
+      end;
+    end;
   end;
+  // Max Changers
+  If (length(changes)+length(FData.changesInfo)) > CT_MAX_MultiOperation_Changers then Exit;
   // Ok, let's go
   FHasValidSignature:=False;
-  FSignatureChecked:=False;
   // Important:
   // When a change is added, everybody must sign again
   // In order to create high anonymity, will add in random order
@@ -895,10 +989,39 @@ begin
         j := Random(length(FData.changesInfo)); // Find random position 0..n-1
       end else j:=0;
       for k:=High(FData.changesInfo) downto (j+1) do FData.changesInfo[k] := FData.changesInfo[k-1];
+      ClearSignatures;
     end else j := High(FData.changesInfo);
     FData.changesInfo[j] := changes[i];
   end;
   Result := True;
+end;
+
+function TOpMultiOperation.AddTxSender(const sender: TMultiOpSender): Boolean;
+Var senders : TMultiOpSenders;
+  receivers : TMultiOpReceivers;
+begin
+  SetLength(senders,1);
+  senders[0] := sender;
+  SetLength(receivers,0);
+  Result := AddTx(senders,receivers,True);
+end;
+
+function TOpMultiOperation.AddTxReceiver(const receiver: TMultiOpReceiver): Boolean;
+Var senders : TMultiOpSenders;
+  receivers : TMultiOpReceivers;
+begin
+  SetLength(senders,0);
+  SetLength(receivers,1);
+  receivers[0] := receiver;
+  Result := AddTx(senders,receivers,True);
+end;
+
+function TOpMultiOperation.AddChangeInfo(const changeInfo: TMultiOpChangeInfo): Boolean;
+Var changes : TMultiOpChangesInfo;
+begin
+  SetLength(changes,1);
+  changes[0] := changeInfo;
+  Result := AddChangeInfos(changes,True);
 end;
 
 destructor TOpMultiOperation.Destroy;
@@ -910,26 +1033,9 @@ begin
 end;
 
 function TOpMultiOperation.toString: String;
-var i : Integer;
-  ssenders,sreceivers,schanges : String;
 begin
-  ssenders := '';
-  for i:=low(FData.txSenders) to High(FData.txSenders) do begin
-    ssenders := ssenders + Format('%d:(%s;%s;%d)',[i+1,TAccountComp.AccountNumberToAccountTxtNumber(FData.txSenders[i].Account),
-        TAccountComp.FormatMoney(FData.txSenders[i].Amount),FData.txSenders[i].N_Operation]);
-  end;
-  sreceivers:='';
-  for i:=low(FData.txReceivers) to High(FData.txReceivers) do begin
-    sreceivers := sreceivers + Format('%d:(%s;%s)',[i+1,TAccountComp.AccountNumberToAccountTxtNumber(FData.txReceivers[i].Account),
-        TAccountComp.FormatMoney(FData.txReceivers[i].Amount)]);
-  end;
-  schanges := '';
-  for i:=low(FData.changesInfo) to High(FData.changesInfo) do begin
-    schanges := schanges + Format('%d:(%s;%d)',[i+1,TAccountComp.AccountNumberToAccountTxtNumber(FData.changesInfo[i].Account),
-        FData.changesInfo[i].N_Operation]);
-  end;
-  Result := Format('Multioperation senders %s receivers %s changes %s Amount:%s Fees:%s',
-    [ssenders,sreceivers,schanges,
+  Result := Format('Multioperation senders:%d receivers:%d changes:%d Amount:%s Fees:%s',
+    [length(FData.txSenders),length(FData.txReceivers),length(FData.changesInfo),
      TAccountComp.FormatMoney(FTotalAmount),
      TAccountComp.FormatMoney(FTotalFee)]);
 end;

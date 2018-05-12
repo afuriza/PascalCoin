@@ -25,6 +25,8 @@ type
 
     // Cell Renderers
     class procedure OperationTime(Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
+    class procedure PASC_CheckAllBalance(Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
+    class procedure PASC_CheckPendingBalance (Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
     class procedure PASC(Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
     class procedure Payload(Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
     class procedure OPHASH(Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
@@ -38,7 +40,7 @@ type
 implementation
 
 uses
-  SysUtils, DateUtils, UCommon, UCommon.Data, UAccounts, UConst;
+  SysUtils, DateUtils, UCommon, UCommon.Data, UAccounts, UConst, UCoreUtils;
 
 const
   CT_PASCBALANCE_POS_COL = clGreen;
@@ -86,6 +88,46 @@ begin
   Handled := true;
 end;
 
+class procedure TCellRenderers.PASC_CheckAllBalance (Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
+var
+  LValue : Int64;
+  LTextStyle: TTextStyle;
+  LRowData : TDataRowData;
+  LStr : AnsiString;
+  LAllBalance : boolean;
+begin
+  LRowData := TDataRowData(RowData);
+  if LRowData.HasData('AllBalance') AND TVariantTool.TryParseBool(LRowData['AllBalance'], LAllBalance) AND LAllBalance then begin
+    Canvas.Font.Style := [fsBold];
+    Canvas.TextRect(Rect, Rect.Left, Rect.Top, 'ALL BALANCE', Canvas.TextStyle);
+    Handled := true;
+    exit;
+  end;
+  PASC(Sender, ACol, ARow, Canvas, Rect, State, CellData, RowData, Handled);
+end;
+
+class procedure TCellRenderers.PASC_CheckPendingBalance (Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
+var
+  LValue : Int64;
+  LTextStyle: TTextStyle;
+  LRowData : TDataRowData;
+  LStr : AnsiString;
+  LAllBalance : boolean;
+begin
+  if NOT TVariantTool.IsNumeric(CellData) then
+    exit;
+  LValue := CellData;
+  LRowData := TDataRowData(RowData);
+  if LRowData.HasData('UnixTime')  AND (LRowData['UnixTime'] = 0) then begin
+    Canvas.Font.Color := CT_PASCBALANCE_0CONF_COL;
+    LStr := '(' + TAccountComp.FormatMoney(LValue) + ')';
+    Canvas.TextRect(Rect, Rect.Left, Rect.Top, LStr, Canvas.TextStyle);
+    Handled := true;
+    exit;
+  end;
+  PASC(Sender, ACol, ARow, Canvas, Rect, State, CellData, RowData, Handled);
+end;
+
 class procedure TCellRenderers.PASC (Sender: TObject; ACol, ARow: Longint; Canvas: TCanvas; Rect: TRect; State: TGridDrawState; const CellData, RowData: Variant; var Handled: boolean);
 var
   LValue : Int64;
@@ -97,14 +139,8 @@ begin
     exit;
   LValue := CellData;
   LRowData := TDataRowData(RowData);
-
-  if LRowData.HasData('UnixTime')  AND (LRowData['UnixTime'] = 0) then begin
-    Canvas.Font.Color := CT_PASCBALANCE_0CONF_COL;
-    LStr := '('+TAccountComp.FormatMoney(LValue)+')';
-  end else begin
-    Canvas.Font.Color := IIF (LValue < 0, CT_PASCBALANCE_NEG_COL, IIF(LValue > 0, CT_PASCBALANCE_POS_COL, CT_PASCBALANCE_NEU_COL));
-    LStr := TAccountComp.FormatMoney(LValue);
-  end;
+  Canvas.Font.Color := IIF (LValue < 0, CT_PASCBALANCE_NEG_COL, IIF(LValue > 0, CT_PASCBALANCE_POS_COL, CT_PASCBALANCE_NEU_COL));
+  LStr := TAccountComp.FormatMoney(LValue);
   Canvas.TextRect(Rect, Rect.Left, Rect.Top, LStr, Canvas.TextStyle);
   Handled := true;
 end;
@@ -145,38 +181,7 @@ end;
 
 class function TCellRenderers.OperationShortText(const OpType, OpSubType : DWord) : AnsiString;
 begin
-  case OpType of
-    CT_PseudoOp_Reward: case OpSubType of
-      0, CT_PseudoOpSubtype_Miner : result := 'Miner Reward';
-      CT_PseudoOpSubtype_Developer : result := 'Developer Reward';
-      else result := 'Unknown';
-    end;
-    CT_Op_Transaction: case OpSubType of
-      CT_OpSubtype_TransactionSender: Result := 'Send';
-      CT_OpSubtype_TransactionReceiver: Result := 'Receive';
-      CT_OpSubtype_BuyTransactionBuyer: result := 'Buy Account Direct';
-      CT_OpSubtype_BuyTransactionTarget: result := 'Purchased Account Direct';
-      CT_OpSubtype_BuyTransactionSeller: result := 'Sold Account Direct';
-      else result := 'Unknown';
-    end;
-    CT_Op_Changekey: Result := 'Change Key (legacy)';
-    CT_Op_Recover: Result := 'Recover';
-    CT_Op_ListAccountForSale: case OpSubType of
-      CT_OpSubtype_ListAccountForPublicSale: result := 'For Sale';
-      CT_OpSubtype_ListAccountForPrivateSale: result := 'Exclusive Sale';
-      else result := 'Unknown';
-    end;
-    CT_Op_DelistAccount: result := 'Remove Sale';
-    CT_Op_BuyAccount: case OpSubType of
-      CT_OpSubtype_BuyAccountBuyer: result := 'Buy Account';
-      CT_OpSubtype_BuyAccountTarget: result := 'Purchased Account';
-      CT_OpSubtype_BuyAccountSeller: result := 'Sold Account';
-      else result := 'Unknown';
-    end;
-    CT_Op_ChangeKeySigned: result :=  'Change Key';
-    CT_Op_ChangeAccountInfo: result := 'Change Info';
-    else result := 'Unknown';
-  end;
+  Result := TCoreTool.GetOperationShortText(OpType, OpSubType);
 end;
 
 class function TCellRenderers.AccountKeyShortText(const AText : AnsiString) : AnsiString;

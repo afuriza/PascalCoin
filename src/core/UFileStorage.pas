@@ -20,7 +20,7 @@ unit UFileStorage;
 interface
 
 uses
-  Classes, UBlockChain, SyncObjs, UThread, UAccounts, UCrypto;
+  Classes, {$IFnDEF FPC}Windows,{$ENDIF} UBlockChain, SyncObjs, UThread, UAccounts, UCrypto;
 {$I config.inc}
 
 Type
@@ -235,11 +235,16 @@ begin
     If Not StreamReadBlockHeader(Stream,iBlockHeaders,BlockHeaderFirstBlock,StartingDeleteBlock,True,_Header) then exit;
     _intBlockIndex := (_Header.BlockNumber-BlockHeaderFirstBlock);
 
+    TLog.NewLog(ltInfo,ClassName,Format('Deleting Blockchain block %d',[StartingDeleteBlock]));
+
     p := FBlockHeadersFirstBytePosition[iBlockHeaders] + (Int64(_intBlockIndex) * Int64(CT_SizeOfBlockHeader));
 
     Stream.Position:=p;
     // Write null data until end of header
     GrowStreamUntilPos(Stream,FBlockHeadersFirstBytePosition[iBlockHeaders] + GetBlockHeaderFixedSize,true);
+    // Force to clean Block Headers future rows
+    SetLength(FBlockHeadersFirstBytePosition,iBlockHeaders+1); // Force to clear future blocks on next Block Headers row (Bug solved on 2.1.8)
+    FStreamLastBlockNumber:=Int64(StartingDeleteBlock)-1;
     // End Stream at _Header
     Stream.Size := Stream.Position + _Header.StreamBlockRelStartPos;
   Finally
@@ -309,7 +314,7 @@ begin
   Try
     fs := GetPendingBufferOperationsStream;
     fs.Position:=0;
-    If OperationsHashTree.LoadOperationsHashTreeFromStream(fs,true,CT_PROTOCOL_2,Nil,errors) then begin
+    If OperationsHashTree.LoadOperationsHashTreeFromStream(fs,true,CT_PROTOCOL_3,Nil,errors) then begin
       TLog.NewLog(ltInfo,ClassName,Format('DoLoadPendingBufferOperations loaded operations:%d',[OperationsHashTree.OperationsCount]));
     end else TLog.NewLog(ltError,ClassName,Format('DoLoadPendingBufferOperations ERROR: loaded operations:%d errors:%s',[OperationsHashTree.OperationsCount,errors]));
   finally
@@ -332,25 +337,26 @@ begin
   End;
 end;
 
-function TFileStorage.DoMoveBlockChain(Start_Block: Cardinal; const DestOrphan: TOrphan; DestStorage : TStorage): Boolean;
-  Procedure DoCopyFile(sourcefn,destfn : AnsiString);
-  var sourceFS, destFS : TFileStream;
-  Begin
-    if Not FileExists(sourcefn) then Raise Exception.Create('Source file not found: '+sourcefn);
-    sourceFS := TFileStream.Create(sourcefn,fmOpenRead+fmShareDenyNone);
+Procedure DoCopyFile(sourcefn,destfn : AnsiString);
+var sourceFS, destFS : TFileStream;
+Begin
+  if Not FileExists(sourcefn) then Raise Exception.Create('Source file not found: '+sourcefn);
+  sourceFS := TFileStream.Create(sourcefn,fmOpenRead+fmShareDenyNone);
+  try
+    sourceFS.Position:=0;
+    destFS := TFileStream.Create(destfn,fmCreate+fmShareDenyWrite);
     try
-      sourceFS.Position:=0;
-      destFS := TFileStream.Create(destfn,fmCreate+fmShareDenyWrite);
-      try
-        destFS.Size:=0;
-        destFS.CopyFrom(sourceFS,sourceFS.Size);
-      finally
-        destFS.Free;
-      end;
+      destFS.Size:=0;
+      destFS.CopyFrom(sourceFS,sourceFS.Size);
     finally
-      sourceFS.Free;
+      destFS.Free;
     end;
+  finally
+    sourceFS.Free;
   end;
+end;
+
+function TFileStorage.DoMoveBlockChain(Start_Block: Cardinal; const DestOrphan: TOrphan; DestStorage : TStorage): Boolean;
 
   Procedure DoCopySafebox;
   var sr: TSearchRec;
@@ -397,6 +403,7 @@ begin
       end;
       if db is TFileStorage then TFileStorage(db).LockBlockChainStream;
       try
+        db.FIsMovingBlockchain:=True;
         ops := TPCOperationsComp.Create(Nil);
         try
           b := Start_Block;
@@ -414,6 +421,7 @@ begin
           DoCopySafebox;
         end;
       finally
+        db.FIsMovingBlockchain:=False;
         if db is TFileStorage then TFileStorage(db).UnlockBlockChainStream;
       end;
     Finally
@@ -486,7 +494,7 @@ end;
 
 function TFileStorage.DoSaveBank: Boolean;
 var fs: TFileStream;
-    bankfilename: AnsiString;
+    bankfilename,aux_newfilename: AnsiString;
     ms : TMemoryStream;
 begin
   Result := true;
@@ -507,6 +515,21 @@ begin
       end;
     finally
       fs.Free;
+    end;
+    // Save a copy each 10000 blocks (aprox 1 month) only when not an orphan
+    if (Orphan='') And ((Bank.BlocksCount MOD (CT_BankToDiskEveryNBlocks*100))=0) then begin
+      aux_newfilename := GetFolder('') + PathDelim+'checkpoint_'+ inttostr(Bank.BlocksCount)+'.safebox';
+      try
+        {$IFDEF FPC}
+        DoCopyFile(bankfilename,aux_newfilename);
+        {$ELSE}
+        CopyFile(PWideChar(bankfilename),PWideChar(aux_newfilename),False);
+        {$ENDIF}
+      Except
+        On E:Exception do begin
+          TLog.NewLog(lterror,ClassName,'Exception copying extra safebox file '+aux_newfilename+' ('+E.ClassName+'):'+E.Message);
+        end;
+      end;
     end;
   end;
 end;
@@ -683,6 +706,7 @@ function TFileStorage.LockBlockChainStream: TFileStream;
     FStreamFirstBlockNumber := 0;
     FStreamLastBlockNumber := -1;
     SetLength(FBlockHeadersFirstBytePosition,0);
+    Result := False;
     //
     if stream.Size<GetBlockHeaderFixedSize then begin
       if (stream.Size=0) then begin
@@ -690,9 +714,16 @@ function TFileStorage.LockBlockChainStream: TFileStream;
         exit;
       end else begin
         // Invalid stream!
-        Result := false;
-        errors := Format('Invalid stream size %d. Lower than minimum %d',[stream.Size, GetBlockHeaderFixedSize]);
-        exit;
+        if (ReadOnly) then begin
+          errors := Format('Invalid stream size %d. Lower than minimum %d',[stream.Size, GetBlockHeaderFixedSize]);
+          exit;
+        end else begin
+          // Clear it
+          TLog.NewLog(ltError,ClassName,Format('Invalid stream size %d. Lower than minimum %d - Initialized to 0',[stream.Size, GetBlockHeaderFixedSize]));
+          stream.size := 0;
+          Result := True;
+          Exit;
+        end;
       end;
     end;
     // Initialize it
@@ -717,9 +748,18 @@ function TFileStorage.LockBlockChainStream: TFileStream;
             FStreamFirstBlockNumber := bh.BlockNumber;
             FStreamLastBlockNumber := bh.BlockNumber;
             if (0<>bh.StreamBlockRelStartPos) then begin
-              errors := Format('Invalid first block start rel pos %d',[bh.StreamBlockRelStartPos]);
-              result := false;
-              exit;
+              errors := Format('Invalid BlockChain stream. First block start rel pos %d',[bh.StreamBlockRelStartPos]);
+              if (ReadOnly) then begin
+                Exit;
+              end else begin
+                FStreamFirstBlockNumber := 0;
+                FStreamLastBlockNumber := -1;
+                SetLength(FBlockHeadersFirstBytePosition,0);
+                stream.Size:=0; // Set size to 0, no data
+                TLog.NewLog(ltError,ClassName,Format('%s - Initialized to 0',[errors]));
+                Result := True;
+              end;
+              Exit;
             end;
             lastbh := bh;
           end else begin
@@ -727,12 +767,18 @@ function TFileStorage.LockBlockChainStream: TFileStream;
             if (bh.BlockNumber=0) then begin
               // This is an "empty" block. Check that ok
               If (bh.BlockNumber<>0) Or (bh.StreamBlockRelStartPos<>0) Or (bh.BlockSize<>0) then begin
-                errors := Format('Invalid empty block on block header. iPos=%d i=%d BlockNumber=%d relstart=%d size=%d - Last block:%d BlockNumber=%d relstart=%d size=%d',
-                [iPos,i,bh.BlockNumber,bh.StreamBlockRelStartPos,bh.BlockSize,
-                 FStreamLastBlockNumber,
-                 lastbh.BlockNumber,lastbh.StreamBlockRelStartPos,lastbh.BlockSize]);
-                result := false;
-                exit;
+                errors := Format('Invalid BlockChain stream not empty block on block header. iPos=%d i=%d BlockNumber=%d relstart=%d size=%d - Last block:%d BlockNumber=%d relstart=%d size=%d',
+                  [iPos,i,bh.BlockNumber,bh.StreamBlockRelStartPos,bh.BlockSize,
+                   FStreamLastBlockNumber,
+                   lastbh.BlockNumber,lastbh.StreamBlockRelStartPos,lastbh.BlockSize]);
+                if (ReadOnly) then begin
+                  Exit;
+                end else begin
+                  TLog.NewLog(lterror,ClassName,Format('%s - Initialized to %d',[errors,FStreamFirstBlockNumber]));
+                  DoDeleteBlockChainBlocks(FStreamLastBlockNumber+1);
+                  Result := True;
+                  Exit;
+                end;
               end;
               // Ok, inc blocknumber
               inc(lastbh.BlockNumber);
@@ -740,11 +786,17 @@ function TFileStorage.LockBlockChainStream: TFileStream;
               if (lastbh.BlockNumber+1<>bh.BlockNumber) or
                 ((lastbh.StreamBlockRelStartPos+lastbh.BlockSize<>bh.StreamBlockRelStartPos) And (i>0)) Or
                 ((0<>bh.StreamBlockRelStartPos) And (i=0)) then begin
-                errors := Format('Invalid check on block header. iPos=%d i=%d BlockNumber=%d relstart=%d size=%d - Last block:%d BlockNumber=%d relstart=%d size=%d',
+                errors := Format('Invalid BlockChain stream on block header. iPos=%d i=%d BlockNumber=%d relstart=%d size=%d - Last block:%d BlockNumber=%d relstart=%d size=%d',
                   [iPos,i,bh.BlockNumber,bh.StreamBlockRelStartPos,bh.BlockSize,FStreamLastBlockNumber,
                    lastbh.BlockNumber,lastbh.StreamBlockRelStartPos,lastbh.BlockSize]);
-                result := false;
-                exit;
+                If (ReadOnly) then begin
+                  Exit;
+                end else begin
+                  TLog.NewLog(lterror,ClassName,Format('%s - Initialized to %d',[errors,FStreamFirstBlockNumber]));
+                  DoDeleteBlockChainBlocks(FStreamLastBlockNumber+1);
+                  Result := True;
+                  Exit;
+                end;
               end else begin
                 FStreamLastBlockNumber := bh.BlockNumber;
                 lastbh := bh;
@@ -756,7 +808,7 @@ function TFileStorage.LockBlockChainStream: TFileStream;
         lastbh.StreamBlockRelStartPos:=0;
         lastbh.BlockSize:=0;
       end;
-      Result := true;
+      Result := True;
     Finally
       mem.Free;
     End;
@@ -789,6 +841,8 @@ begin
       If Not InitStreamInfo(FBlockChainStream,errors) then begin
         TLog.NewLog(lterror,ClassName,errors);
         raise Exception.Create('Error reading File: '+fn+#10+'Errors:'+#10+errors);
+      end else begin
+        TLog.NewLog(ltInfo,ClassName,Format('Loaded blockchain file: %s with blocks from %d to %d',[fn,FStreamFirstBlockNumber,FStreamLastBlockNumber]));
       end;
     end;
   Except
@@ -917,6 +971,8 @@ begin
     Stream.Write(c,sizeof(_Header.BlockSize));
     // Positioning until Header end
     GrowStreamUntilPos(Stream,_StreamBlockHeaderStartPos + GetBlockHeaderFixedSize,true);
+    // If this is an override, force to clean Block Headers future rows
+    SetLength(FBlockHeadersFirstBytePosition,iBlockHeaders+1); // Force to clear future blocks on next Block Headers row (Bug solved on 2.1.8)
     // And now positioning until Data:
     GrowStreamUntilPos(Stream,_StreamBlockHeaderStartPos + GetBlockHeaderFixedSize + _Header.StreamBlockRelStartPos, false );
     {$IFDEF HIGHLOG}

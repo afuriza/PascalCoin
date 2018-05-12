@@ -51,7 +51,7 @@ Const
 
   CT_FirstReward: UInt64 = 1000000; // 4 decimals... First reward = 100,0000
   CT_MinReward: UInt64 = 10000; // 4 decimals... Min reward = 1,0000
-  CT_NewLineRewardDecrease: Cardinal = 420480; // Avg 4 year
+  CT_NewLineRewardDecrease: Cardinal = {$IFDEF PRODUCTION}210240{$ELSE}{$IFDEF TESTNET}20000{$ENDIF}{$ENDIF};
 
   CT_WaitNewBlocksBeforeTransaction = 100;
 
@@ -62,7 +62,7 @@ Const
   CT_MaxTransactionFee = 100000000;
   CT_MaxWalletAmount = 10000000000000; // ... can be deleted
   //
-  CT_MinCompactTarget: Cardinal = {$IFDEF PRODUCTION}$19000000{$ELSE}{$IFDEF TESTNET}$19000000{$ELSE}{$ENDIF}{$ENDIF}; // First compact target of block 0
+  CT_MinCompactTarget: Cardinal = {$IFDEF PRODUCTION}$19000000{$ELSE}{$IFDEF TESTNET}$17000000{$ELSE}{$ENDIF}{$ENDIF}; // First compact target of block 0
 
   CT_CalcNewTargetBlocksAverage: Cardinal = 100;
   CT_CalcNewTargetLimitChange_SPLIT = 10;
@@ -96,16 +96,16 @@ Const
   CT_PROTOCOL_2 = 2;
   CT_PROTOCOL_3 = 3;
   CT_BlockChain_Protocol_Available: Word = $0003; // Protocol 3 flag
-  CT_Protocol_Upgrade_v2_MinBlock = {$IFDEF PRODUCTION}115000{$ELSE}600{$ENDIF};
-  CT_Protocol_Upgrade_v3_MinBlock = {$IFDEF PRODUCTION}210000{$ELSE}800{$ENDIF};
+  CT_Protocol_Upgrade_v2_MinBlock = {$IFDEF PRODUCTION}115000{$ELSE}50{$ENDIF};
+  CT_Protocol_Upgrade_v3_MinBlock = {$IFDEF PRODUCTION}210000{$ELSE}250{$ENDIF};
 
 
-  CT_MagicNetIdentification = {$IFDEF PRODUCTION}$0A043580{$ELSE}$0A04FFFF{$ENDIF}; // Unix timestamp 168048000 ... It's Albert birthdate!
+  CT_MagicNetIdentification = {$IFDEF PRODUCTION}$0A043580{$ELSE}$03000040{$ENDIF}; // Unix timestamp 168048000 ... It's Albert birthdate!
 
   CT_NetProtocol_Version: Word = $0006; // Version 2.1.2 only allows net protocol 6 (Introduced on 2.0.0)
   // IMPORTANT NOTE!!!
   // NetProtocol_Available MUST BE always >= NetProtocol_version
-  CT_NetProtocol_Available: Word = $0006;  // Remember, >= NetProtocol_version !!!
+  CT_NetProtocol_Available: Word = $0007;  // Remember, >= NetProtocol_version !!!
 
   CT_MaxAccountOperationsPerBlockWithoutFee = 1;
 
@@ -127,6 +127,8 @@ Const
   // Protocol 3 new operations
   CT_Op_MultiOperation = $09;  // PIP-0017
 
+  CT_Protocol_v3_PIP11_Percent = 20; // PIP-0011 20% Percent proposed and voted by PIP-0011
+
   CT_PseudoOpSubtype_Miner                = 1;
   CT_PseudoOpSubtype_Developer            = 2;
 
@@ -145,22 +147,26 @@ Const
   CT_OpSubtype_BuyAccountSeller           = 63;
   CT_OpSubtype_ChangeKeySigned            = 71;
   CT_OpSubtype_ChangeAccountInfo          = 81;
-  CT_OpSubtype_MultiOperation             = 91;
+  CT_OpSubtype_MultiOperation_Global      = 91;
+  CT_OpSubtype_MultiOperation_AccountInfo = 92;
 
-  CT_ClientAppVersion : AnsiString = {$IFDEF PRODUCTION}'2.1.6'{$ELSE}{$IFDEF TESTNET}'TESTNET 3.0 BETA'{$ELSE}{$ENDIF}{$ENDIF};
+  CT_ClientAppVersion : AnsiString = {$IFDEF PRODUCTION}'3.0.1'{$ELSE}{$IFDEF TESTNET}'TESTNET 3.3.1'{$ELSE}{$ENDIF}{$ENDIF};
 
   CT_Discover_IPs =  'bpascal1.dynamic-dns.net;bpascal2.dynamic-dns.net;pascalcoin1.dynamic-dns.net;pascalcoin2.dynamic-dns.net;pascalcoin1.dns1.us;pascalcoin2.dns1.us;pascalcoin1.dns2.us;pascalcoin2.dns2.us';
 
   CT_TRUE_FALSE : Array[Boolean] Of AnsiString = ('FALSE','TRUE');
 
-  CT_MAX_0_fee_operations_per_block_by_miner = {$IFDEF PRODUCTION}2000{$ELSE}{$IFDEF TESTNET}20{$ELSE}{$ENDIF}{$ENDIF};
-  CT_MAX_Operations_per_block_by_miner =  {$IFDEF PRODUCTION}10000{$ELSE}{$IFDEF TESTNET}50{$ELSE}{$ENDIF}{$ENDIF};
+  CT_MAX_0_fee_operations_per_block_by_miner = {$IFDEF PRODUCTION}2000{$ELSE}{$IFDEF TESTNET}2000{$ELSE}{$ENDIF}{$ENDIF};
+  CT_MAX_Operations_per_block_by_miner =  {$IFDEF PRODUCTION}10000{$ELSE}{$IFDEF TESTNET}50000{$ELSE}{$ENDIF}{$ENDIF};
 
-  CT_MAX_MultiOperation_Senders = 1000;
-  CT_MAX_MultiOperation_Receivers = 10000;
-  CT_MAX_MultiOperation_Changers = 1000;
+  CT_MAX_MultiOperation_Senders = 100;
+  CT_MAX_MultiOperation_Receivers = 1000;
+  CT_MAX_MultiOperation_Changers = 100;
 
   CT_DEFAULT_MaxSafeboxSnapshots = 10;
+
+  CT_MOLINA  = 1;
+  CT_MOLINA_DECIMAL = {$IFDEF FPC}Real(CT_MOLINA/1000.0);{$ELSE}0.0001;{$ENDIF}
 
   // App Params
   CT_PARAM_GridAccountsStream = 'GridAccountsStreamV2';

@@ -73,6 +73,7 @@ Type
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean; override;
@@ -82,7 +83,7 @@ Type
     Class Function DoSignOperation(key : TECPrivateKey; var trans : TOpTransactionData) : Boolean;
     class function OpType : Byte; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
     function DestinationAccount : Int64; override;
@@ -103,6 +104,7 @@ Type
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     Class Function GetOperationHashToSign(const op : TOpChangeKeyData) : TRawBytes;
     Class Function DoSignOperation(key : TECPrivateKey; var op : TOpChangeKeyData) : Boolean;
@@ -111,7 +113,7 @@ Type
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
     function DestinationAccount : Int64; override;
@@ -139,13 +141,14 @@ Type
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     class function OpType : Byte; override;
 
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
     function N_Operation : Cardinal; override;
@@ -203,6 +206,7 @@ Type
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     Class Function GetOperationHashToSign(const operation : TOpListAccountData) : TRawBytes;
     Class Function DoSignOperation(key : TECPrivateKey; var operation : TOpListAccountData) : Boolean;
@@ -213,7 +217,7 @@ Type
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
     function DestinationAccount : Int64; override;
@@ -257,6 +261,7 @@ Type
     procedure InitializeData; override;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; override;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; override;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); override;
   public
     Class Function GetOperationHashToSign(const op : TOpChangeAccountInfoData) : TRawBytes;
     Class Function DoSignOperation(key : TECPrivateKey; var op : TOpChangeAccountInfoData) : Boolean;
@@ -265,7 +270,7 @@ Type
     function GetBufferForOpHash(UseProtocolV2 : Boolean): TRawBytes; override;
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean; override;
     function OperationAmount : Int64; override;
-    function OperationFee : UInt64; override;
+    function OperationFee : Int64; override;
     function OperationPayload : TRawBytes; override;
     function SignerAccount : Cardinal; override;
     function DestinationAccount : Int64; override;
@@ -354,6 +359,30 @@ begin
   if TStreamOp.ReadAnsiString(Stream,FData.sign.r)<0 then Exit;
   if TStreamOp.ReadAnsiString(Stream,FData.sign.s)<0 then Exit;
   Result := true;
+end;
+
+procedure TOpChangeAccountInfo.FillOperationResume(Block: Cardinal; getInfoForAllAccounts: Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  SetLength(OperationResume.Changers,1);
+  OperationResume.Changers[0] := CT_TMultiOpChangeInfo_NUL;
+  OperationResume.Changers[0].Account := FData.account_target;
+  OperationResume.Changers[0].Changes_type := FData.changes_type;
+  OperationResume.Changers[0].New_Accountkey := FData.new_accountkey;
+  OperationResume.Changers[0].New_Name := FData.new_name;
+  OperationResume.Changers[0].New_Type := FData.new_type;
+  If (FData.account_signer=FData.account_target) then begin
+    OperationResume.Changers[0].N_Operation := FData.n_operation;
+    OperationResume.Changers[0].Signature := FData.sign;
+    OperationResume.Changers[0].Fee := FData.fee;
+  end else begin
+    SetLength(OperationResume.Changers,2);
+    OperationResume.Changers[1] := CT_TMultiOpChangeInfo_NUL;
+    OperationResume.Changers[1].Account := FData.account_signer;
+    OperationResume.Changers[1].N_Operation := FData.n_operation;
+    OperationResume.Changers[1].Fee := FData.fee;
+    OperationResume.Changers[1].Signature := FData.sign;
+  end;
 end;
 
 class function TOpChangeAccountInfo.GetOperationHashToSign(const op: TOpChangeAccountInfoData): TRawBytes;
@@ -506,19 +535,11 @@ begin
     end;
   end;
 
-  If Not FSignatureChecked then begin
-    If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
-      errors := 'Invalid sign';
-      FHasValidSignature := false;
-      exit;
-    end else FHasValidSignature := true;
-    FSignatureChecked:=True;
-  end else begin
-    If Not FHasValidSignature then begin
-      errors := 'Invalid sign';
-      exit;
-    end;
-  end;
+  If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
+    errors := 'Invalid sign';
+    FHasValidSignature := false;
+    exit;
+  end else FHasValidSignature := true;
   FPrevious_Signer_updated_block := account_signer.updated_block;
   FPrevious_Destination_updated_block := account_target.updated_block;
   If (public_key in FData.changes_type) then begin
@@ -543,7 +564,7 @@ begin
   Result := 0;
 end;
 
-function TOpChangeAccountInfo.OperationFee: UInt64;
+function TOpChangeAccountInfo.OperationFee: Int64;
 begin
   Result := FData.fee;
 end;
@@ -607,7 +628,6 @@ begin
   end else begin
     FHasValidSignature := true;
   end;
-  FSignatureChecked:=True;
 end;
 
 function TOpChangeAccountInfo.toString: String;
@@ -658,7 +678,6 @@ begin
   end else begin
     FHasValidSignature := true;
   end;
-  FSignatureChecked:=True;
 end;
 
 function TOpTransaction.DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean;
@@ -736,20 +755,12 @@ begin
   end;
 
   // Check signature
-  If Not FSignatureChecked then begin
-    _h := GetTransactionHashToSign(FData);
-    if (Not TCrypto.ECDSAVerify(sender.accountInfo.accountkey,_h,FData.sign)) then begin
-      errors := 'Invalid sign';
-      FHasValidSignature := false;
-      Exit;
-    end else FHasValidSignature := true;
-    FSignatureChecked:=True;
-  end else begin
-    If Not FHasValidSignature then begin
-      errors := 'Invalid sign';
-      exit;
-    end;
-  end;
+  _h := GetTransactionHashToSign(FData);
+  if (Not TCrypto.ECDSAVerify(sender.accountInfo.accountkey,_h,FData.sign)) then begin
+    errors := 'Invalid sign';
+    FHasValidSignature := false;
+    Exit;
+  end else FHasValidSignature := true;
   //
   FPrevious_Signer_updated_block := sender.updated_block;
   FPrevious_Destination_updated_block := target.updated_block;
@@ -956,12 +967,49 @@ begin
   Result := true;
 end;
 
+procedure TOpTransaction.FillOperationResume(Block: Cardinal; getInfoForAllAccounts: Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  SetLength(OperationResume.Senders,1);
+  OperationResume.Senders[0] := CT_TMultiOpSender_NUL;
+  OperationResume.Senders[0].Account:=FData.sender;
+  OperationResume.Senders[0].Amount:=Int64(FData.amount + FData.fee);
+  OperationResume.Senders[0].N_Operation:=FData.n_operation;
+  OperationResume.Senders[0].Payload:=FData.payload;
+  OperationResume.Senders[0].Signature:=FData.sign;
+  case FData.opTransactionStyle of
+    transaction : begin
+      SetLength(OperationResume.Receivers,1);
+      OperationResume.Receivers[0] := CT_TMultiOpReceiver_NUL;
+      OperationResume.Receivers[0].Account:=FData.target;
+      OperationResume.Receivers[0].Amount:=FData.amount;
+      OperationResume.Receivers[0].Payload:=FData.payload;
+    end;
+    buy_account,transaction_with_auto_buy_account : begin
+      SetLength(OperationResume.Receivers,2);
+      OperationResume.Receivers[0] := CT_TMultiOpReceiver_NUL;
+      OperationResume.Receivers[0].Account:=FData.target;
+      OperationResume.Receivers[0].Amount:= (FData.amount - FData.AccountPrice);
+      OperationResume.Receivers[0].Payload:=FData.payload;
+      OperationResume.Receivers[1] := CT_TMultiOpReceiver_NUL;
+      OperationResume.Receivers[1].Account:=FData.SellerAccount;
+      OperationResume.Receivers[1].Amount:= FData.AccountPrice;
+      OperationResume.Receivers[1].Payload:=FData.payload;
+      SetLength(OperationResume.Changers,1);
+      OperationResume.Changers[0] := CT_TMultiOpChangeInfo_NUL;
+      OperationResume.Changers[0].Account := FData.target;
+      OperationResume.Changers[0].Changes_type := [public_key];
+      OperationResume.Changers[0].New_Accountkey := FData.new_accountkey;
+    end;
+  end;
+end;
+
 function TOpTransaction.OperationAmount: Int64;
 begin
   Result := FData.amount;
 end;
 
-function TOpTransaction.OperationFee: UInt64;
+function TOpTransaction.OperationFee: Int64;
 begin
   Result := FData.fee;
 end;
@@ -1084,7 +1132,6 @@ begin
     TLog.NewLog(lterror,Classname,'Error signing a new Change key');
     FHasValidSignature := false;
   end else FHasValidSignature := true;
-  FSignatureChecked:=True;
 end;
 
 function TOpChangeKey.DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean;
@@ -1168,19 +1215,11 @@ begin
     end;
   end;
 
-  If Not FSignatureChecked then begin
-    If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
-      errors := 'Invalid sign';
-      FHasValidSignature := false;
-      exit;
-    end else FHasValidSignature := true;
-    FSignatureChecked:=True;
-  end else begin
-    If Not FHasValidSignature then begin
-      errors := 'Invalid sign';
-      exit;
-    end;
-  end;
+  If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
+    errors := 'Invalid sign';
+    FHasValidSignature := false;
+    exit;
+  end else FHasValidSignature := true;
 
   FPrevious_Signer_updated_block := account_signer.updated_block;
   FPrevious_Destination_updated_block := account_target.updated_block;
@@ -1309,12 +1348,34 @@ begin
   Result := true;
 end;
 
+procedure TOpChangeKey.FillOperationResume(Block: Cardinal; getInfoForAllAccounts: Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  SetLength(OperationResume.Changers,1);
+  OperationResume.Changers[0] := CT_TMultiOpChangeInfo_NUL;
+  OperationResume.Changers[0].Account := FData.account_target;
+  OperationResume.Changers[0].Changes_type := [public_key];
+  OperationResume.Changers[0].New_Accountkey := FData.new_accountkey;
+  if (FData.account_signer=FData.account_target) then begin
+    OperationResume.Changers[0].N_Operation := FData.n_operation;
+    OperationResume.Changers[0].Fee := FData.fee;
+    OperationResume.Changers[0].Signature := FData.sign;
+  end else begin
+    SetLength(OperationResume.Changers,2);
+    OperationResume.Changers[1] := CT_TMultiOpChangeInfo_NUL;
+    OperationResume.Changers[1].Account := FData.account_signer;
+    OperationResume.Changers[1].N_Operation := FData.n_operation;
+    OperationResume.Changers[1].Fee := FData.fee;
+    OperationResume.Changers[1].Signature := FData.sign;
+  end;
+end;
+
 function TOpChangeKey.OperationAmount: Int64;
 begin
   Result := 0;
 end;
 
-function TOpChangeKey.OperationFee: UInt64;
+function TOpChangeKey.OperationFee: Int64;
 begin
   Result := FData.fee;
 end;
@@ -1393,7 +1454,6 @@ begin
   FData.n_operation := n_operation;
   FData.fee := fee;
   FHasValidSignature := true; // Recover founds doesn't need a signature
-  FSignatureChecked := True;
 end;
 
 function TOpRecoverFounds.DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors : AnsiString) : Boolean;
@@ -1465,12 +1525,22 @@ begin
   Result := true;
 end;
 
+procedure TOpRecoverFounds.FillOperationResume(Block: Cardinal; getInfoForAllAccounts: Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  SetLength(OperationResume.Changers,1);
+  OperationResume.Changers[0] := CT_TMultiOpChangeInfo_NUL;
+  OperationResume.Changers[0].Account := FData.account;
+  OperationResume.Changers[0].Fee := FData.fee;
+  OperationResume.Changers[0].N_Operation := FData.n_operation;
+end;
+
 function TOpRecoverFounds.OperationAmount: Int64;
 begin
   Result := 0;
 end;
 
-function TOpRecoverFounds.OperationFee: UInt64;
+function TOpRecoverFounds.OperationFee: Int64;
 begin
   Result := FData.fee;
 end;
@@ -1623,19 +1693,11 @@ begin
     exit;
   end;
 
-  If Not FSignatureChecked then begin
-    If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
-      errors := 'Invalid sign';
-      FHasValidSignature := false;
-      exit;
-    end else FHasValidSignature := true;
-    FSignatureChecked:=True;
-  end else begin
-    If Not FHasValidSignature then begin
-      errors := 'Invalid sign';
-      exit;
-    end;
-  end;
+  If Not TCrypto.ECDSAVerify(account_signer.accountInfo.accountkey,GetOperationHashToSign(FData),FData.sign) then begin
+    errors := 'Invalid sign';
+    FHasValidSignature := false;
+    exit;
+  end else FHasValidSignature := true;
 
   FPrevious_Signer_updated_block := account_signer.updated_block;
   FPrevious_Destination_updated_block := account_target.updated_block;
@@ -1756,6 +1818,42 @@ begin
   Result := true;
 end;
 
+procedure TOpListAccount.FillOperationResume(Block: Cardinal; getInfoForAllAccounts: Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+begin
+  inherited FillOperationResume(Block, getInfoForAllAccounts, Affected_account_number, OperationResume);
+  SetLength(OperationResume.Changers,1);
+  OperationResume.Changers[0] := CT_TMultiOpChangeInfo_NUL;
+  OperationResume.Changers[0].Account:=FData.account_target;
+  case FData.operation_type of
+    lat_ListForSale : begin
+        if (FData.new_public_key.EC_OpenSSL_NID=CT_TECDSA_Public_Nul.EC_OpenSSL_NID) then begin
+          OperationResume.Changers[0].Changes_type:=[list_for_public_sale];
+        end else begin
+          OperationResume.Changers[0].Changes_type:=[list_for_private_sale];
+          OperationResume.Changers[0].New_Accountkey := FData.new_public_key;
+          OperationResume.Changers[0].Locked_Until_Block := FData.locked_until_block;
+        end;
+        OperationResume.Changers[0].Seller_Account:=FData.account_to_pay;
+        OperationResume.Changers[0].Account_Price:=FData.account_price;
+      end;
+    lat_DelistAccount : begin
+        OperationResume.Changers[0].Changes_type:=[delist];
+      end;
+  end;
+  if (FData.account_signer = FData.account_target) then begin
+    OperationResume.Changers[0].Fee:=FData.fee;
+    OperationResume.Changers[0].N_Operation:=FData.n_operation;
+    OperationResume.Changers[0].Signature:=FData.sign;
+  end else begin
+    SetLength(OperationResume.Changers,2);
+    OperationResume.Changers[1] := CT_TMultiOpChangeInfo_NUL;
+    OperationResume.Changers[1].Account := FData.account_signer;
+    OperationResume.Changers[1].N_Operation := FData.n_operation;
+    OperationResume.Changers[1].Fee := FData.fee;
+    OperationResume.Changers[1].Signature := FData.sign;
+  end;
+end;
+
 function TOpListAccount.N_Operation: Cardinal;
 begin
   Result := FData.n_operation;
@@ -1766,7 +1864,7 @@ begin
   Result := 0;
 end;
 
-function TOpListAccount.OperationFee: UInt64;
+function TOpListAccount.OperationFee: Int64;
 begin
   Result := FData.fee;
 end;
@@ -1872,7 +1970,6 @@ begin
     TLog.NewLog(lterror,Classname,'Error signing a new list account for sale operation');
     FHasValidSignature := false;
   end else FHasValidSignature := true;
-  FSignatureChecked:=True;
 end;
 
 function TOpListAccountForSale.IsDelist: Boolean;
@@ -1900,7 +1997,6 @@ begin
     TLog.NewLog(lterror,Classname,'Error signing a delist account operation');
     FHasValidSignature := false;
   end else FHasValidSignature := true;
-  FSignatureChecked:=True;
 end;
 
 function TOpDelistAccountForSale.IsDelist: Boolean;
@@ -1936,7 +2032,6 @@ begin
     TLog.NewLog(lterror,Classname,'Error signing a new Buy operation');
     FHasValidSignature := false;
   end else FHasValidSignature := true;
-  FSignatureChecked:=True;
 end;
 
 procedure TOpBuyAccount.InitializeData;

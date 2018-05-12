@@ -50,7 +50,7 @@
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
-      <OtherUnitFiles Value="common;core;libraries\pasopencl;libraries\synapse;libraries\generics.collections;libraries\sphere10"/>
+      <OtherUnitFiles Value="core;libraries\pasopencl;libraries\synapse;libraries\pascalcoin"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <CodeGeneration>

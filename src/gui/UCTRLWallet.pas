@@ -1,16 +1,23 @@
 unit UCTRLWallet;
 
 {$mode delphi}
-
 {$modeswitch nestedprocvars}
+
+{ Copyright (c) 2018 Sphere 10 Software
+
+  Distributed under the MIT software license, see the accompanying file LICENSE
+  or visit http://www.opensource.org/licenses/mit-license.php.
+
+  Acknowledgements:
+  - Herman Schoenfeld: unit creator, implementation
+}
 
 interface
 
 uses
   Classes, SysUtils, FileUtil, Forms, Controls, Graphics, Dialogs, StdCtrls, Menus,
-  ExtCtrls, PairSplitter, Buttons, UVisualGrid, UCommon.UI, Generics.Collections,
-  UAccounts, UDataSources, UNode, UWIZSendPASC, UWIZTransferAccount,
-  UWIZChangeAccountPrivateKey;
+  ExtCtrls, PairSplitter, Buttons, UVisualGrid, UCommon.UI, Generics.Collections, ULog,
+  UAccounts, UDataSources, UNode, UCoreObjects, UCoreUtils, UWIZSendPASC, UWIZChangeKey, UWIZEnlistAccountForSale;
 
 type
 
@@ -18,7 +25,7 @@ type
 
   TCTRLWalletAccountsMode = (wamMyAccounts, wamFirstAccount);
   TCTRLWalletOperationsMode = (womSelectedAccounts, womAllAccounts);
-  TCTRLWalletOperationsHistory = (woh30Days, wohFullHistory);
+  TCTRLWalletOperationsHistory = (woh7Days, woh30Days, wohFullHistory);
 
   TCTRLWallet = class(TApplicationForm)
     cbAccounts: TComboBox;
@@ -32,9 +39,10 @@ type
     miCopyOphash: TMenuItem;
     miOperationInfo: TMenuItem;
     miSendPASC: TMenuItem;
-    miTransferAccounts: TMenuItem;
-    miChangeAccountsPrivateKey: TMenuItem;
-    miListAccountsForSale: TMenuItem;
+    miChangeKey: TMenuItem;
+    miAccountsMarket: TMenuItem;
+    miEnlistAccountsForSale: TMenuItem;
+    miDelistAccountsFromSale: TMenuItem;
     miAccountInfo: TMenuItem;
     miSep1: TMenuItem;
     miSep2: TMenuItem;
@@ -52,12 +60,12 @@ type
     procedure FormDestroy(Sender: TObject);
     procedure FormResize(Sender: TObject);
     procedure miAccountInfoClick(Sender: TObject);
+    procedure miChangeKeyClick(Sender: TObject);
     procedure miCopyOphashClick(Sender: TObject);
     procedure miOperationInfoClick(Sender: TObject);
     procedure miSendPASCClick(Sender: TObject);
-    procedure miTransferAccountsClick(Sender: TObject);
-    procedure miChangeAccountsPrivateKeyClick(Sender: TObject);
-    procedure miListAccountsForSaleClick(Sender: TObject);
+    procedure miEnlistAccountsForSaleClick(Sender: TObject);
+    procedure miDelistAccountsFromSaleClick(Sender: TObject);
   private
     FNodeNotifyEvents: TNodeNotifyEvents;
     FAccountsMode: TCTRLWalletAccountsMode;
@@ -65,42 +73,40 @@ type
     FOperationsHistory: TCTRLWalletOperationsHistory;
     FAccountsGrid: TVisualGrid;
     FOperationsGrid: TVisualGrid;
-    FAccountsDataSource: TAccountsDataSource;
+    FBalance : TBalanceSummary;
+    FAccountsDataSource: TMyAccountsDataSource;
     FOperationsDataSource: TAccountsOperationsDataSource;
     procedure SetAccountsMode(AMode: TCTRLWalletAccountsMode);
     procedure SetOperationsMode(AMode: TCTRLWalletOperationsMode);
     procedure SetOperationsHistory(AHistory: TCTRLWalletOperationsHistory);
     procedure RefreshMyAccountsCombo;
-    function GetAccNoWithoutChecksum(constref ARow: variant): cardinal; inline;
-    function GetAccounts(const AccountNumbers: TArray<cardinal>): TArray<TAccount>;
+    procedure RefreshTotals;
+    procedure RefreshAccountsGrid;
+    procedure RefreshOperationsGrid;
+    function GetSelectedAccounts : TArray<Cardinal>;
   protected
     procedure ActivateFirstTime; override;
     procedure OnPrivateKeysChanged(Sender: TObject);
+    procedure OnUserKeyActivityDetected(Sender: TObject);
     procedure OnNodeBlocksChanged(Sender: TObject);
     procedure OnNodeNewOperation(Sender: TObject);
-    procedure OnAccountsUpdated(Sender: TObject);
-    procedure OnAccountsSelected(Sender: TObject;
-      constref ASelection: TVisualGridSelection);
-    procedure OnOperationSelected(Sender: TObject;
-      constref ASelection: TVisualGridSelection);
-    procedure OnPrepareAccountPopupMenu(Sender: TObject;
-      constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
-    procedure OnPrepareOperationsPopupMenu(Sender: TObject;
-      constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
+    procedure OnAccountsSelected(Sender: TObject; constref ASelection: TVisualGridSelection);
+    procedure OnAccountsGridFinishedUpdating(Sender: TObject);
+    procedure OnOperationSelected(Sender: TObject; constref ASelection: TVisualGridSelection);
+    procedure OnPrepareAccountPopupMenu(Sender: TObject; constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
+    procedure OnPrepareOperationsPopupMenu(Sender: TObject; constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
   public
-    property AccountsMode: TCTRLWalletAccountsMode
-      read FAccountsMode write SetAccountsMode;
-    property OperationsMode: TCTRLWalletOperationsMode
-      read FOperationsMode write SetOperationsMode;
-    property OperationsHistory: TCTRLWalletOperationsHistory
-      read FOperationsHistory write SetOperationsHistory;
+    property SelectedAccounts : TArray<Cardinal> read GetSelectedAccounts;
+    property AccountsMode: TCTRLWalletAccountsMode read FAccountsMode write SetAccountsMode;
+    property OperationsMode: TCTRLWalletOperationsMode read FOperationsMode write SetOperationsMode;
+    property OperationsHistory: TCTRLWalletOperationsHistory read FOperationsHistory write SetOperationsHistory;
   end;
 
 implementation
 
 uses
-  UUserInterface, UCellRenderers, UBlockChain, UWallet, UCrypto, UCoreUtils,
-  UCommon, UMemory, Generics.Defaults, UCommon.Data, UCommon.Collections;
+  UUserInterface, UCellRenderers, UBlockChain, UWallet, UCrypto,
+  UCommon, UMemory, Generics.Defaults, UCommon.Data, UCommon.Collections, UWIZOperation;
 
 {$R *.lfm}
 
@@ -112,25 +118,31 @@ var
 begin
   // event registrations
   FNodeNotifyEvents := TNodeNotifyEvents.Create(self);
+  FNodeNotifyEvents.WatchKeys := TWallet.Keys.AccountsKeyList;
+  FNodeNotifyEvents.OnKeyActivity:= OnUserKeyActivityDetected;
   FNodeNotifyEvents.OnBlocksChanged := OnNodeBlocksChanged;
   FNodeNotifyEvents.OnOperationsChanged := OnNodeNewOperation;
   TWallet.Keys.OnChanged.Add(OnPrivateKeysChanged);
-
+  TWallet.Keys.AccountsKeyList.ClearAccountKeyChanges;   // XXXXX CLEAR BUFFER on start
 
   // fields
-  FAccountsDataSource := TAccountsDataSource.Create(Self);
-  FAccountsDataSource.FilterKeys := TWallet.Keys.AccountsKeyList.ToArray;
+  FAccountsDataSource := TMyAccountsDataSource.Create(Self);
+  FAccountsDataSource.BalancePointer := @FBalance;
   FOperationsDataSource := TAccountsOperationsDataSource.Create(Self);
+  FOperationsDataSource.Accounts := TCoreTool.GetUserAccountNumbers;
+  FOperationsDataSource.BlockDepth:=TTimeSpan.FromDays(7).TotalBlockCount;
+  FOperationsHistory := woh7Days;
+  FOperationsMode:= womAllAccounts;
+  FAccountsMode := wamMyAccounts;
 
   // grids
   FAccountsGrid := TVisualGrid.Create(Self);
-  FAccountsGrid.SortMode := smMultiColumn;
-  FAccountsGrid.FetchDataInThread := True;
+  FAccountsGrid.SortMode := smSingleColumn;
+  FAccountsGrid.FetchDataInThread := true;
   FAccountsGrid.AutoPageSize := True;
-  FAccountsGrid.SelectionType := stMultiRow;
   FAccountsGrid.DeselectionType := dtDefault;
-  FAccountsGrid.Options := [vgoColAutoFill, vgoColSizing,
-    vgoSortDirectionAllowNone, vgoAutoHidePaging];
+  FAccountsGrid.SelectionType := stMultiRow;
+  FAccountsGrid.Options := [vgoColAutoFill, vgoColSizing, vgoSortDirectionAllowNone, vgoAutoHidePaging, vgoAutoHideSearchPanel];
   with FAccountsGrid.AddColumn('Account') do
   begin
     Binding := 'AccountNumber';
@@ -158,19 +170,17 @@ begin
     Renderer := TCellRenderers.PASC;
     Filters := SORTABLE_NUMERIC_FILTER;
   end;
-
+  FAccountsGRid.OnFinishedUpdating:= OnAccountsGridFinishedUpdating;
   FAccountsGrid.OnSelection := OnAccountsSelected;
-  FAccountsGrid.OnFinishedUpdating := OnAccountsUpdated;
   FAccountsGrid.OnPreparePopupMenu := OnPrepareAccountPopupMenu;
 
   FOperationsGrid := TVisualGrid.Create(Self);
   FOperationsGrid.SortMode := smMultiColumn;
-  FOperationsGrid.FetchDataInThread := True;
+  FOperationsGrid.FetchDataInThread := true;
   FOperationsGrid.AutoPageSize := True;
-  FOperationsGrid.SelectionType := stRow;
   FOperationsGrid.DeselectionType := dtDefault;
-  FOperationsGrid.Options := [vgoColAutoFill, vgoColSizing,
-    vgoSortDirectionAllowNone, vgoAutoHidePaging];
+  FOperationsGrid.SelectionType := stRow;
+  FOperationsGrid.Options := [vgoColAutoFill, vgoColSizing, vgoSortDirectionAllowNone, vgoAutoHidePaging, vgoAutoHideSearchPanel];
   with FOperationsGrid.AddColumn('Time') do
   begin
     SortBinding := 'UnixTime';
@@ -206,7 +216,7 @@ begin
     DisplayBinding := 'Amount';
     Width := 150;
     HeaderAlignment := taRightJustify;
-    Renderer := TCellRenderers.PASC;
+    Renderer := TCellRenderers.PASC_CheckPendingBalance;
     Filters := SORTABLE_NUMERIC_FILTER;
   end;
   with FOperationsGrid.AddColumn('Fee') do
@@ -217,7 +227,7 @@ begin
     AutoWidth := True;
     HeaderAlignment := taRightJustify;
     DataAlignment := taRightJustify;
-    Renderer := TCellRenderers.PASC;
+    Renderer := TCellRenderers.PASC_CheckPendingBalance;
     Filters := SORTABLE_NUMERIC_FILTER;
   end;
   with FOperationsGrid.AddColumn('Balance') do
@@ -228,7 +238,7 @@ begin
     Width := 100;
     HeaderAlignment := taRightJustify;
     DataAlignment := taRightJustify;
-    Renderer := TCellRenderers.PASC;
+    Renderer := TCellRenderers.PASC_CheckPendingBalance;
     Filters := SORTABLE_NUMERIC_FILTER;
   end;
   with FOperationsGrid.AddColumn('Payload') do
@@ -262,6 +272,7 @@ begin
   cmbDuration.ReadOnly := True;
   cmbDuration.Items.BeginUpdate;
   try
+    cmbDuration.AddItem('7 Days', TObject(woh7Days));
     cmbDuration.AddItem('30 Days', TObject(woh30Days));
     cmbDuration.AddItem('Maximum', TObject(wohFullHistory));
   finally
@@ -271,6 +282,11 @@ begin
   cmbDuration.OnChange := cmbDurationChange;
   FOperationsGrid.WidgetControl := cmbDuration;
 
+  // NOTE: datasources are assigned to grid in FormResize
+
+  // Add grid to panels
+  paAccounts.AddControlDockCenter(FAccountsGrid);
+  paOperations.AddControlDockCenter(FOperationsGrid);
 end;
 
 procedure TCTRLWallet.FormDestroy(Sender: TObject);
@@ -279,21 +295,28 @@ begin
 end;
 
 procedure TCTRLWallet.FormResize(Sender: TObject);
+var x : integer;
 begin
-  // Left hand panel is 50% the size up until a max size of 450
+  // Grid data-sources are set here on "first form resize" in order to avoid
+  // excessive datasource fetching during initialising sequence. Note, grid
+  // refreshes on size changed, blockchain activity and when assigned to grid
+  if NOT Assigned(FAccountsGrid.DataSource) then
+    FAccountsGrid.DataSource := FAccountsDataSource;
 
+  if NOT Assigned(FOperationsGrid.DataSource) then
+    FOperationsGrid.DataSource := FOperationsDataSource;
 end;
 
 procedure TCTRLWallet.ActivateFirstTime;
 begin
-  // Configure grid states
-  AccountsMode := wamMyAccounts;
-  OperationsMode := womAllAccounts;
-  OperationsHistory := woh30Days;
+  // add first time-init here
+end;
 
-  // Load up selected for some reasons
-  FAccountsGrid.InternalDrawGrid.ClearSelections;
-  FOperationsGrid.InternalDrawGrid.ClearSelections;
+procedure TCTRLWallet.RefreshTotals;
+
+begin
+  lblTotalPASC.Caption := TAccountComp.FormatMoney(FBalance.TotalPASC);
+  lblTotalPASA.Caption := Format('%d', [FBalance.TotalPASA]);
 end;
 
 procedure TCTRLWallet.RefreshMyAccountsCombo;
@@ -305,23 +328,17 @@ var
   str: ansistring;
 begin
   // determine current selection
-  if cbAccounts.ItemIndex >= 1 then
-  begin
-    if cbAccounts.ItemIndex < cbAccounts.Items.Count - 1 then
-    begin
+  if cbAccounts.ItemIndex >= 1 then begin
+    if cbAccounts.ItemIndex < cbAccounts.Items.Count - 1 then begin
       last_key := TBox<TAccountKey>(
         cbAccounts.Items.Objects[cbAccounts.ItemIndex]).Value;
       selectFirst := False;
       selectLast := False;
-    end
-    else
-    begin
+    end else begin
       selectFirst := False;
       selectLast := True;
     end;
-  end
-  else
-  begin
+  end else begin
     selectFirst := True;
     selectLast := False;
   end;
@@ -334,18 +351,14 @@ begin
       cbAccounts.Items.Objects[i].Free;
     cbAccounts.Items.Clear;
     // add new items
-    for i := 0 to TWallet.Keys.Count - 1 do
-    begin
+    for i := 0 to TWallet.Keys.Count - 1 do begin
       // get i'th key
       key := TWallet.Keys.Key[i];
       // fix name
-      if (key.Name = '') then
-      begin
+      if (key.Name = '') then begin
         str := 'Sha256=' + TCrypto.ToHexaString(TCrypto.DoSha256(
           TAccountComp.AccountKey2RawString(key.AccountKey)));
-      end
-      else
-      begin
+      end else begin
         str := key.Name;
       end;
       if not Assigned(key.PrivateKey) then
@@ -362,13 +375,9 @@ begin
     cbAccounts.ItemIndex := 0
   else if selectLast then
     cbAccounts.ItemIndex := cbAccounts.Items.Count - 1
-  else
-  begin
-    for i := 1 to cbAccounts.Items.Count - 2 do
-    begin
-      if TAccountKeyEqualityComparer.AreEqual(TBox<TAccountKey>(
-        cbAccounts.Items.Objects[i]).Value, last_key) then
-      begin
+  else begin
+    for i := 1 to cbAccounts.Items.Count - 2 do begin
+      if TAccountKeyEqualityComparer.AreEqual(TBox<TAccountKey>( cbAccounts.Items.Objects[i]).Value, last_key) then begin
         cbAccounts.ItemIndex := i;
         exit;
       end;
@@ -376,117 +385,107 @@ begin
   end;
 end;
 
-function TCTRLWallet.GetAccNoWithoutChecksum(constref ARow: variant): cardinal;
-begin
-  Result := ARow.__KEY;
-end;
-
-//function GetAccNoWithCheckSum(constref ARow: variant): string;
-//begin
-//  Result := ARow.Account;
-//end;
-
-function TCTRLWallet.GetAccounts(
-  const AccountNumbers: TArray<cardinal>): TArray<TAccount>;
+procedure TCTRLWallet.RefreshAccountsGrid;
 var
-  acc: TAccount;
-  safeBox: TPCSafeBox;
-  keys: TOrderedAccountKeysList;
-  LContainer: Generics.Collections.TList<TAccount>;
-  i: integer;
+  index: integer;
+  sel: TBox<TAccountKey>;
 begin
-  LContainer := Generics.Collections.TList<TAccount>.Create();
-  keys := TWallet.keys.AccountsKeyList;
-  safeBox := TUserInterface.Node.Bank.safeBox;
-  safeBox.StartThreadSafe;
-  try
-    LContainer.Clear;
-    try
-      // load selected user accounts
-      for i := Low(AccountNumbers) to High(AccountNumbers) do
-      begin
-        acc := safeBox.Account(AccountNumbers[i]);
-        if keys.IndexOfAccountKey(acc.accountInfo.accountKey) >= 0 then
-        begin
-          LContainer.Add(acc);
-        end;
-      end;
-    finally
-      safeBox.EndThreadSave;
-    end;
-    Result := LContainer.ToArray;
-  finally
-    LContainer.Free;
+  if Self.AccountsMode <> wamMyAccounts then exit; // showing getpasa
+  if cbAccounts.ItemIndex = cbAccounts.Items.Count - 1 then exit; // not a key
+  index := cbAccounts.ItemIndex;
+  if index = 0 then begin
+    gpMyAccounts.Caption := 'My Accounts';
+    FAccountsDataSource.FilterKeys := TWallet.Keys.AccountsKeyList.ToArray;
+  end else begin
+    sel := TBox<TAccountKey>(cbAccounts.Items.Objects[cbAccounts.ItemIndex]);
+    gpMyAccounts.Caption := Format('%s Accounts', [TWallet.Keys[TWallet.Keys.IndexOfAccountKey(sel.Value)].Name]);
+    FAccountsDataSource.FilterKeys := TArray<TAccountKey>.Create(sel.Value);
   end;
-
+  FAccountsGrid.RefreshGrid;
 end;
 
-procedure TCTRLWallet.SetAccountsMode(AMode: TCTRLWalletAccountsMode);
-var
-  sel1: TVisualGridSelection;
-  sel2: TRect;
+procedure TCTRLWallet.RefreshOperationsGrid;
 begin
-  FAccountsMode := AMode;
-  paAccounts.RemoveAllControls(False);
-  case AMode of
-    wamMyAccounts:
+  case FOperationsMode of
+    womAllAccounts: begin
+      FOperationsGrid.Caption.Text := '';
+      FOperationsDataSource.Accounts := TCoreTool.GetUserAccountNumbers;
+    end;
+    womSelectedAccounts:
     begin
-      FOperationsGrid.DataSource := FOperationsDataSource;
-      FAccountsGrid.DataSource := FAccountsDataSource;
-      FAccountsGrid.Caption.Text := 'My Accounts';
-      paAccounts.RemoveAllControls(False);
-      sel1 := FAccountsGrid.Selection;
-      sel2 := FAccountsGrid.InternalDrawGrid.Selection;
-      paAccounts.RemoveAllControls(False);
-      paAccounts.AddControlDockCenter(FAccountsGrid);
-      paOperations.RemoveAllControls(False);
-      paOperations.AddControlDockCenter(FOperationsGrid);
-    end;
-    wamFirstAccount: raise Exception.Create('Not implemented');
+      FOperationsGrid.Caption.Text := 'Selected Accounts';
+      FOperationsDataSource.Accounts := SelectedAccounts;
+    end else
+      raise ENotSupportedException.Create(Format('AMode %d not supported', [integer(FOperationsMode)]));
   end;
+  FOperationsGrid.RefreshGrid;
 end;
 
-procedure TCTRLWallet.SetOperationsMode(AMode: TCTRLWalletOperationsMode);
+function TCTRLWallet.GetSelectedAccounts : TArray<Cardinal>;
 
-  function GetAccNo(constref AAccount: TAccount): cardinal; overload;
-  begin
-    Result := AAccount.account;
-  end;
-
-  function GetAccNo(constref ARow: variant): cardinal; overload;
+  function GetAccNoWithoutChecksum(constref ARow: variant): cardinal;
   begin
     Result := ARow.__KEY;
   end;
 
 begin
-  case AMode of
-    womAllAccounts:
-    begin
-      FOperationsGrid.Caption.Text := '';
-      FOperationsDataSource.Accounts :=
-        TListTool<TAccount, cardinal>.Transform(
-        FAccountsDataSource.LastFetchResult, GetAccNo);
+  Result := TListTool<Variant, Cardinal>.Transform(FAccountsGrid.SelectedRows, GetAccNoWithoutChecksum);
+end;
+
+procedure TCTRLWallet.SetAccountsMode(AMode: TCTRLWalletAccountsMode);
+begin
+  if FAccountsMode = AMode then exit;
+
+  FUILock.Acquire;
+  try
+    FAccountsMode := AMode;
+    paAccounts.RemoveAllControls(False);
+    case AMode of
+      wamMyAccounts:
+      begin
+        // reset account combo
+        cbAccounts.OnChange := nil; // disable event
+        cbAccounts.ItemIndex :=0;
+        cbAccounts.OnChange := cbAccountsChange; // re-enable event
+        // ensure on accounts panel
+        if FAccountsGrid.Parent <> paAccounts then begin
+          paAccounts.RemoveAllControls(False);
+          paAccounts.AddControlDockCenter(FAccountsGrid);
+        end;
+        // Refresh grid
+        FAccountsGrid.ClearSelection();
+        RefreshAccountsGrid;
+      end;
+      wamFirstAccount: raise Exception.Create('Not implemented');
     end;
-    womSelectedAccounts:
-    begin
-      FOperationsGrid.Caption.Text := 'Selected Accounts';
-      FOperationsDataSource.Accounts :=
-        TListTool<variant, cardinal>.Transform(FAccountsGrid.SelectedRows, GetAccNo);
-    end
-    else
-      raise ENotSupportedException.Create(Format('AMode %d not supported',
-        [integer(AMode)]));
+  finally
+    FUILock.Release;
   end;
-  FOperationsGrid.RefreshGrid;
-  FOperationsMode := AMode;
+end;
+
+procedure TCTRLWallet.SetOperationsMode(AMode: TCTRLWalletOperationsMode);
+begin
+  if FOperationsMode = AMode then exit;
+  FUILock.Acquire;
+  try
+    FOperationsMode := AMode;
+    case AMode of
+     womSelectedAccounts: FOperationsDataSource.Accounts := SelectedAccounts;
+     womAllAccounts: FOperationsDataSource.Accounts := TCoreTool.GetUserAccountNumbers;
+    end;
+    RefreshOperationsGrid;
+  finally
+    FUILock.Release;
+  end;
 end;
 
 procedure TCTRLWallet.SetOperationsHistory(AHistory: TCTRLWalletOperationsHistory);
 begin
   FOperationsHistory := AHistory;
   case FOperationsHistory of
-    woh30Days: FOperationsDataSource.TimeSpan := TTimeSpan.FromDays(30);
-    wohFullHistory: FOperationsDataSource.TimeSpan := TTimeSpan.FromDays(10 * 365);
+    woh7Days: FOperationsDataSource.BlockDepth := TTimeSpan.FromDays(7).TotalBlockCount;
+    woh30Days: FOperationsDataSource.BlockDepth := TTimeSpan.FromDays(30).TotalBlockCount;
+    wohFullHistory: FOperationsDataSource.BlockDepth := TTimeSpan.FromDays(10 * 365).TotalBlockCount;
   end;
   FOperationsGrid.RefreshGrid;
 end;
@@ -496,97 +495,70 @@ begin
   RefreshMyAccountsCombo;
 end;
 
-procedure TCTRLWallet.OnNodeBlocksChanged(Sender: TObject);
+procedure TCTRLWallet.OnUserKeyActivityDetected;
 begin
+  if NOT TUserInterface.Node.HasBestKnownBlockchainTip then
+    exit; // node syncing
   FAccountsGrid.RefreshGrid;
   FOperationsGrid.RefreshGrid;
+end;
+
+procedure TCTRLWallet.OnNodeBlocksChanged(Sender: TObject);
+begin
+  // TODO: play block sound chime
 end;
 
 procedure TCTRLWallet.OnNodeNewOperation(Sender: TObject);
 begin
-  FAccountsGrid.RefreshGrid;
-  FOperationsGrid.RefreshGrid;
+  // TODO: play operation sound tick
 end;
 
-procedure TCTRLWallet.OnAccountsUpdated(Sender: TObject);
+procedure TCTRLWallet.OnAccountsGridFinishedUpdating(Sender: TObject);
 begin
-  lblTotalPASC.Caption := TAccountComp.FormatMoney(
-    FAccountsDataSource.Overview.TotalPASC);
-  lblTotalPASA.Caption := Format('%d', [FAccountsDataSource.Overview.TotalPASA]);
+  RefreshTotals; // totals are updated by datasource, via a pointer
 end;
 
-procedure TCTRLWallet.OnAccountsSelected(Sender: TObject;
-  constref ASelection: TVisualGridSelection);
-var
-  row: longint;
-  selectedAccounts: Generics.Collections.TList<cardinal>;
-  acc: cardinal;
-  GC: TDisposables;
+procedure TCTRLWallet.OnAccountsSelected(Sender: TObject; constref ASelection: TVisualGridSelection);
 begin
-  selectedAccounts := GC.AddObject(TList<cardinal>.Create) as TList<cardinal>;
-
-  if ASelection.RowCount > 0 then
-  begin
-    for row := ASelection.Row to (ASelection.Row + ASelection.RowCount - 1) do
-    begin
-      if (TAccountComp.AccountTxtNumberToAccountNumber(
-        FAccountsGrid.Rows[row].Account, acc)) then
-        selectedAccounts.Add(acc);
-    end;
-    FOperationsDataSource.Accounts := selectedAccounts.ToArray;
-    FOperationsGrid.Caption.Text :=
-      IIF(ASelection.RowCount = 1, Format('Account: %s',
-      [TAccountComp.AccountNumberToAccountTxtNumber(selectedAccounts[0])]),
-      'Selected Accounts');
-    FOperationsGrid.RefreshGrid;
-  end
+  if ASelection.Page >= 0 then
+    if FOperationsMode <> womSelectedAccounts then
+      OperationsMode := womSelectedAccounts
+    else
+      RefreshOperationsGrid
   else
-  begin
     OperationsMode := womAllAccounts;
-  end;
 end;
 
-procedure TCTRLWallet.OnOperationSelected(Sender: TObject;
-  constref ASelection: TVisualGridSelection);
+procedure TCTRLWallet.OnOperationSelected(Sender: TObject; constref ASelection: TVisualGridSelection);
 var
   row: longint;
   v: variant;
   ophash: ansistring;
 begin
+  if ASelection.Page < 0 then exit;
   row := ASelection.Row;
-  if (row >= 0) and (row < FOperationsGrid.RowCount) then
-  begin
+  if (row >= 0) and (row < FOperationsGrid.RowCount) then begin
     v := FOperationsGrid.Rows[row];
     ophash := FOperationsGrid.Rows[row].OPHASH;
-    if TPCOperation.IsValidOperationHash(ophash) then
+    if TPCOperation.IsValidOperationHash(ophash) then begin
       TUserInterface.ShowOperationInfoDialog(self, ophash);
+      FOperationsGrid.ClearSelection;
+    end;
   end;
 end;
 
 procedure TCTRLWallet.cbAccountsChange(Sender: TObject);
-var
-  index: integer;
-  sel: TBox<TAccountKey>;
 begin
-  index := cbAccounts.ItemIndex;
-  if cbAccounts.ItemIndex < 0 then
-    exit;
-  if index = 0 then
-    FAccountsDataSource.FilterKeys := TWallet.Keys.AccountsKeyList.ToArray
-  else if index = cbAccounts.Items.Count - 1 then
-  begin
-    AccountsMode := wamFirstAccount;
-    exit;
-  end
-  else
-  begin
-    sel := TBox<TAccountKey>(cbAccounts.Items.Objects[cbAccounts.ItemIndex]);
-    FAccountsDataSource.FilterKeys := TArray<TAccountKey>.Create(sel.Value);
-  end;
-  if Self.AccountsMode <> wamMyAccounts then
+  if cbAccounts.ItemIndex < 0 then exit;
+  FAccountsGrid.ClearSelection();
+  if cbAccounts.ItemIndex = cbAccounts.Items.Count - 1 then
+    AccountsMode := wamFirstAccount
+  else if FAccountsMode = wamFirstAccount then
     AccountsMode := wamMyAccounts
   else
-    FAccountsGrid.RefreshGrid;
+    RefreshAccountsGrid;
+  if FOperationsMode <> womAllAccounts then
+    RefreshOperationsGrid;
 end;
 
 procedure TCTRLWallet.cmbDurationChange(Sender: TObject);
@@ -598,31 +570,36 @@ begin
     exit;
 
   case cmbDuration.ItemIndex of
-    0: OperationsHistory := woh30Days;
-    1: OperationsHistory := wohFullHistory;
+    0: OperationsHistory := woh7Days;
+    1: OperationsHistory := woh30Days;
+    2: OperationsHistory := wohFullHistory;
   end;
 end;
 
-procedure TCTRLWallet.OnPrepareAccountPopupMenu(Sender: TObject;
-  constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
+procedure TCTRLWallet.OnPrepareAccountPopupMenu(Sender: TObject; constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
+var
+  accNo: cardinal;
+  account: TAccount;
 begin
   miSep1.Visible := ASelection.RowCount = 1;
   miAccountInfo.Visible := ASelection.RowCount = 1;
-  miTransferAccounts.Caption :=
-    IIF(ASelection.RowCount = 1, 'Transfer Account', 'Transfer Accounts');
-  miChangeAccountsPrivateKey.Caption :=
-    IIF(ASelection.RowCount = 1, 'Change Account Private Key',
-    'Change Accounts Private Key');
-  miListAccountsForSale.Caption :=
-    IIF(ASelection.RowCount = 1, 'List Account For Sale',
-    'List Accounts For Sale');
+  miSendPASC.Caption := IIF(ASelection.RowCount = 1, 'Send PASC', 'Send All PASC');
+  miChangeKey.Caption := IIF(ASelection.RowCount = 1, 'Change Key', 'Change All Key');
+  miEnlistAccountsForSale.Caption := IIF(ASelection.RowCount = 1, 'Enlist Account For Sale', 'Enlist All Account For Sale');
+  miDelistAccountsFromSale.Caption := IIF(ASelection.RowCount = 1, 'Delist Account From Sale', 'Delist All Account From Sale');
+  if ASelection.RowCount = 1 then begin
+    if not TAccountComp.AccountTxtNumberToAccountNumber(FAccountsGrid.Rows[ASelection.Row].Account, accNo) then
+      raise Exception.Create('Error Parsing Account Number From Grid');
+    account := TNode.Node.Operations.SafeBoxTransaction.Account(accNo);
+    miEnlistAccountsForSale.Visible := IIF(TAccountComp.IsAccountForSale(account.accountInfo), False, True);
+    miDelistAccountsFromSale.Visible := not miEnlistAccountsForSale.Visible;
+  end;
   APopupMenu := mnuAccountsPopup;
 end;
 
 procedure TCTRLWallet.miAccountInfoClick(Sender: TObject);
 begin
-  if FAccountsGrid.Selection.RowCount <> 1 then
-    exit;
+  if FAccountsGrid.Selection.RowCount <> 1 then exit;
   TUserInterface.ShowAccountInfoDialog(Self, FAccountsGrid.SelectedRows[0].__KEY);
 end;
 
@@ -630,80 +607,50 @@ procedure TCTRLWallet.miSendPASCClick(Sender: TObject);
 var
   Scoped: TDisposables;
   wiz: TWIZSendPASCWizard;
-  model: TWizSendPASCModel;
-  AccountNumbersWithoutChecksum: TArray<cardinal>;
+  model: TWIZOperationsModel;
 begin
   wiz := Scoped.AddObject(TWIZSendPASCWizard.Create(nil)) as TWIZSendPASCWizard;
-  model := Scoped.AddObject(TWizSendPASCModel.Create(nil)) as TWizSendPASCModel;
-
-  AccountNumbersWithoutChecksum :=
-    TListTool<variant, cardinal>.Transform(FAccountsGrid.SelectedRows,
-    GetAccNoWithoutChecksum);
-
-  model.SelectedAccounts := GetAccounts(AccountNumbersWithoutChecksum);
-  model.SelectedIndex := 0;
+  model := TWIZOperationsModel.Create(wiz, omtSendPasc);
+  model.Account.SelectedAccounts := TNode.Node.GetAccounts(SelectedAccounts, True);
   wiz.Start(model);
 end;
 
-procedure TCTRLWallet.miTransferAccountsClick(Sender: TObject);
+procedure TCTRLWallet.miChangeKeyClick(Sender: TObject);
 var
   Scoped: TDisposables;
-  wiz: TWIZTransferAccountWizard;
-  model: TWIZTransferAccountModel;
-  AccountNumbersWithoutChecksum: TArray<cardinal>;
+  wiz: TWIZChangeKeyWizard;
+  model: TWIZOperationsModel;
 begin
-  wiz := Scoped.AddObject(TWIZTransferAccountWizard.Create(nil)) as
-    TWIZTransferAccountWizard;
-  model := Scoped.AddObject(TWIZTransferAccountModel.Create(nil)) as
-    TWIZTransferAccountModel;
-
-  AccountNumbersWithoutChecksum :=
-    TListTool<variant, cardinal>.Transform(FAccountsGrid.SelectedRows,
-    GetAccNoWithoutChecksum);
-
-  model.SelectedAccounts := GetAccounts(AccountNumbersWithoutChecksum);
-  model.SelectedIndex := 0;
+  wiz := Scoped.AddObject(TWIZChangeKeyWizard.Create(nil)) as TWIZChangeKeyWizard;
+  model := TWIZOperationsModel.Create(wiz, omtChangeKey);
+  model.Account.SelectedAccounts := TNode.Node.GetAccounts(SelectedAccounts, True);
   wiz.Start(model);
 end;
 
-procedure TCTRLWallet.miChangeAccountsPrivateKeyClick(Sender: TObject);
+procedure TCTRLWallet.miEnlistAccountsForSaleClick(Sender: TObject);
 var
   Scoped: TDisposables;
-  wiz: TWIZChangeAccountPrivateKeyWizard;
-  model: TWIZChangeAccountPrivateKeyModel;
-  AccountNumbersWithoutChecksum: TArray<cardinal>;
+  wiz: TWIZEnlistAccountForSaleWizard;
+  model: TWIZOperationsModel;
 begin
-  wiz := Scoped.AddObject(TWIZChangeAccountPrivateKeyWizard.Create(nil)) as
-    TWIZChangeAccountPrivateKeyWizard;
-  model := Scoped.AddObject(TWIZChangeAccountPrivateKeyModel.Create(nil)) as
-    TWIZChangeAccountPrivateKeyModel;
-
-  AccountNumbersWithoutChecksum :=
-    TListTool<variant, cardinal>.Transform(FAccountsGrid.SelectedRows,
-    GetAccNoWithoutChecksum);
-
-  model.SelectedAccounts := GetAccounts(AccountNumbersWithoutChecksum);
-  model.SelectedIndex := 0;
+  wiz := Scoped.AddObject(TWIZEnlistAccountForSaleWizard.Create(nil)) as TWIZEnlistAccountForSaleWizard;
+  model := TWIZOperationsModel.Create(wiz, omtEnlistAccountForSale);
+  model.Account.SelectedAccounts := TNode.Node.GetAccounts(SelectedAccounts, True);
   wiz.Start(model);
 end;
 
-procedure TCTRLWallet.miListAccountsForSaleClick(Sender: TObject);
+procedure TCTRLWallet.miDelistAccountsFromSaleClick(Sender: TObject);
 begin
- raise ENotImplemented.Create('not yet implemented.');
+  raise ENotImplemented.Create('not yet implemented.');
 end;
 
-procedure TCTRLWallet.OnPrepareOperationsPopupMenu(Sender: TObject;
-  constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
+procedure TCTRLWallet.OnPrepareOperationsPopupMenu(Sender: TObject; constref ASelection: TVisualGridSelection; out APopupMenu: TPopupMenu);
 begin
-  if (ASelection.RowCount <> 1) or ((ASelection.RowCount = 1) and
-    (FOperationsGrid.SelectedRows[0].__KEY <> variant(nil))) then
-  begin
+  if (ASelection.RowCount <> 1) or ((ASelection.RowCount = 1) and (FOperationsGrid.SelectedRows[0].__KEY <> variant(nil))) then begin
     miSep2.Visible := True;
     miOperationInfo.Visible := True;
     APopupMenu := mnuOperationsPopup;
-  end
-  else
-  begin
+  end else begin
     miSep2.Visible := False;
     miOperationInfo.Visible := False;
     APopupMenu := nil; // is empty, so dont show
@@ -717,8 +664,7 @@ end;
 
 procedure TCTRLWallet.miOperationInfoClick(Sender: TObject);
 begin
-  if FOperationsGrid.Selection.RowCount = 0 then
-    exit;
+  if FOperationsGrid.Selection.RowCount = 0 then exit;
   TUserInterface.ShowOperationInfoDialog(Self, FOperationsGrid.SelectedRows[0].__KEY);
 end;
 

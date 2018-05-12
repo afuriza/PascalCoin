@@ -1,6 +1,15 @@
 program PascalCoin_wallet_classic;
 
+{$IFDEF FPC}
+  {$MODE Delphi}
+{$ENDIF}
+
 uses
+{$IFnDEF FPC}
+{$ELSE}
+  {$IFDEF LINUX}cthreads,{$ENDIF}
+  Interfaces,
+{$ENDIF}
   Forms,
   UBlockChain in 'core\UBlockChain.pas',
   UCrypto in 'core\UCrypto.pas',
@@ -14,10 +23,9 @@ uses
   ULog in 'core\ULog.pas',
   UNode in 'core\UNode.pas',
   UECIES in 'core\UECIES.pas',
+  UAES in 'core\UAES.pas',
   UFRMWallet in 'gui-classic\UFRMWallet.pas' {FRMWallet},
-  UFolderHelper in 'common\UFolderHelper.pas',
-  UAppParams in 'common\UAppParams.pas',
-  UGridUtils in 'common\UGridUtils.pas',
+  UFileStorage in 'core\UFileStorage.pas',
   UFRMPascalCoinWalletConfig in 'gui-classic\UFRMPascalCoinWalletConfig.pas' {FRMPascalCoinWalletConfig},
   UFRMAbout in 'gui-classic\UFRMAbout.pas' {FRMAbout},
   UFRMOperation in 'gui-classic\UFRMOperation.pas' {FRMOperation},
@@ -26,26 +34,16 @@ uses
   UFRMPayloadDecoder in 'gui-classic\UFRMPayloadDecoder.pas' {FRMPayloadDecoder},
   UFRMNodesIp in 'gui-classic\UFRMNodesIp.pas' {FRMNodesIp},
   UTCPIP in 'core\UTCPIP.pas',
-  UJSONFunctions in 'common\UJSONFunctions.pas',
   URPC in 'core\URPC.pas',
   UPoolMining in 'core\UPoolMining.pas',
-  UFileStorage in 'core\UFileStorage.pas',
   UOpenSSL in 'core\UOpenSSL.pas',
-  UOpenSSLdef in 'core\UOpenSSLdef.pas',
-  UAES in 'core\UAES.pas',
-  UFRMAccountSelect in 'gui-classic\UFRMAccountSelect.pas' {FRMAccountSelect},
-  UFRMAccountInfo in 'gui-classic\UFRMAccountInfo.pas' {FRMAccountInfo},
-  UFRMMemoText in 'gui-classic\UFRMMemoText.pas' {FRMMemoText},
-  UChunk in 'core\UChunk.pas',
-  UBaseTypes in 'core\UBaseTypes.pas',
-  UAccountKeyStorage in 'core\UAccountKeyStorage.pas',
-  USettings in 'core\USettings.pas';
+  UOpenSSLdef in 'core\UOpenSSLdef.pas';
 
 {$R *.res}
 
 begin
   Application.Initialize;
-  Application.MainFormOnTaskbar := True;
+  {$IFDEF WINDOWS}Application.MainFormOnTaskbar := True;{$ENDIF}
   Application.Title := 'Pascal Coin Wallet, Miner & Explorer';
   Application.CreateForm(TFRMWallet, FRMWallet);
   Application.Run;

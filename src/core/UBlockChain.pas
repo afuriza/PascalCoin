@@ -107,7 +107,7 @@ uses
 
 Type
   // Moved from UOpTransaction to here
-  TOpChangeAccountInfoType = (public_key,account_name,account_type);
+  TOpChangeAccountInfoType = (public_key,account_name,account_type,list_for_public_sale,list_for_private_sale,delist);
   TOpChangeAccountInfoTypes = Set of TOpChangeAccountInfoType;
 
   // MultiOp... will allow a MultiOperation
@@ -132,6 +132,10 @@ Type
     New_Accountkey: TAccountKey;  // If (changes_mask and $0001)=$0001 then change account key
     New_Name: TRawBytes;          // If (changes_mask and $0002)=$0002 then change name
     New_Type: Word;               // If (changes_mask and $0004)=$0004 then change type
+    Seller_Account : Int64;
+    Account_Price : Int64;
+    Locked_Until_Block : Cardinal;
+    Fee: Int64;
     Signature: TECDSA_SIG;
   end;
   TMultiOpChangesInfo = Array of TMultiOpChangeInfo;
@@ -190,8 +194,6 @@ Type
   Private
     Ftag: integer;
   Protected
-    FSignatureChecked : Boolean; // Improvement TPCOperation speed 2.1.6
-    //
     FPrevious_Signer_updated_block: Cardinal;
     FPrevious_Destination_updated_block : Cardinal;
     FPrevious_Seller_updated_block : Cardinal;
@@ -200,7 +202,7 @@ Type
     procedure InitializeData; virtual;
     function SaveOpToStream(Stream: TStream; SaveExtendedData : Boolean): Boolean; virtual; abstract;
     function LoadOpFromStream(Stream: TStream; LoadExtendedData : Boolean): Boolean; virtual; abstract;
-    procedure FillOperationResume(Block : Cardinal; Affected_account_number : Cardinal; var OperationResume : TOperationResume); virtual;
+    procedure FillOperationResume(Block : Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume); virtual;
     Property Previous_Signer_updated_block : Cardinal read FPrevious_Signer_updated_block; // deprecated
     Property Previous_Destination_updated_block : Cardinal read FPrevious_Destination_updated_block; // deprecated
     Property Previous_Seller_updated_block : Cardinal read FPrevious_Seller_updated_block; // deprecated
@@ -211,11 +213,13 @@ Type
     function DoOperation(AccountPreviousUpdatedBlock : TAccountPreviousBlockInfo; AccountTransaction : TPCSafeBoxTransaction; var errors: AnsiString): Boolean; virtual; abstract;
     procedure AffectedAccounts(list : TList); virtual; abstract;
     class function OpType: Byte; virtual; abstract;
-    Class Function OperationToOperationResume(Block : Cardinal; Operation : TPCOperation; Affected_account_number : Cardinal; var OperationResume : TOperationResume) : Boolean; virtual;
+    Class Function OperationToOperationResume(Block : Cardinal; Operation : TPCOperation; getInfoForAllAccounts : Boolean; Affected_account_number : Cardinal; var OperationResume : TOperationResume) : Boolean; virtual;
     function OperationAmount : Int64; virtual; abstract;
-    function OperationFee: UInt64; virtual; abstract;
+    function OperationAmountByAccount(account : Cardinal) : Int64; virtual;
+    function OperationFee: Int64; virtual; abstract;
     function OperationPayload : TRawBytes; virtual; abstract;
     function SignerAccount : Cardinal; virtual; abstract;
+    procedure SignerAccounts(list : TList); virtual;
     function IsSignerAccount(account : Cardinal) : Boolean; virtual;
     function IsAffectedAccount(account : Cardinal) : Boolean; virtual;
     function DestinationAccount : Int64; virtual;
@@ -385,6 +389,7 @@ Type
     FReadOnly: Boolean;
     procedure SetBank(const Value: TPCBank);
   protected
+    FIsMovingBlockchain : Boolean;
     procedure SetOrphan(const Value: TOrphan); virtual;
     procedure SetReadOnly(const Value: Boolean); virtual;
     Function DoLoadBlockChain(Operations : TPCOperationsComp; Block : Cardinal) : Boolean; virtual; abstract;
@@ -471,7 +476,8 @@ Const
   CT_TOperationResume_NUL : TOperationResume = (valid:false;Block:0;NOpInsideBlock:-1;OpType:0;OpSubtype:0;time:0;AffectedAccount:0;SignerAccount:-1;n_operation:0;DestAccount:-1;SellerAccount:-1;newKey:(EC_OpenSSL_NID:0;x:'';y:'');OperationTxt:'';Amount:0;Fee:0;Balance:0;OriginalPayload:'';PrintablePayload:'';OperationHash:'';OperationHash_OLD:'';errors:'';isMultiOperation:False;Senders:Nil;Receivers:Nil;changers:Nil);
   CT_TMultiOpSender_NUL : TMultiOpSender =  (Account:0;Amount:0;N_Operation:0;Payload:'';Signature:(r:'';s:''));
   CT_TMultiOpReceiver_NUL : TMultiOpReceiver = (Account:0;Amount:0;Payload:'');
-  CT_TMultiOpChangeInfo_NUL : TMultiOpChangeInfo = (Account:0;N_Operation:0;Changes_type:[];New_Accountkey:(EC_OpenSSL_NID:0;x:'';y:'');New_Name:'';New_Type:0;Signature:(r:'';s:''));
+  CT_TMultiOpChangeInfo_NUL : TMultiOpChangeInfo = (Account:0;N_Operation:0;Changes_type:[];New_Accountkey:(EC_OpenSSL_NID:0;x:'';y:'');New_Name:'';New_Type:0;Seller_Account:-1;Account_Price:-1;Locked_Until_Block:0;Fee:0;Signature:(r:'';s:''));
+  CT_TOpChangeAccountInfoType_Txt : Array[Low(TOpChangeAccountInfoType)..High(TOpChangeAccountInfoType)] of AnsiString = ('public_key','account_name','account_type','list_for_public_sale','list_for_private_sale','delist');
 
 implementation
 
@@ -541,7 +547,7 @@ begin
       Result := true;
     Finally
       if Not Result then begin
-        NewLog(Operations, lterror, 'Invalid new block '+inttostr(Operations.OperationBlock.block)+': ' + errors);
+        NewLog(Operations, lterror, 'Invalid new block '+inttostr(Operations.OperationBlock.block)+': ' + errors+ ' > '+TPCOperationsComp.OperationBlockToText(Operations.OperationBlock));
       end;
       Operations.Unlock;
     End;
@@ -670,13 +676,9 @@ begin
                 break;
               end else begin
                 // To prevent continuous saving...
-                {$IFDEF TESTNET}
-                Storage.SaveBank;
-                {$ELSE}
                 If (BlocksCount MOD (CT_BankToDiskEveryNBlocks*10))=0 then begin
                   Storage.SaveBank;
                 end;
-                {$ENDIF}
               end;
             end else break;
           end else break;
@@ -1193,23 +1195,28 @@ begin
     // In build prior to 1.0.4 soob only can have 2 values: 0 or 1
     // In build 1.0.4 soob can has 2 more values: 2 or 3
     // In build 2.0 soob can has 1 more value: 4
+    // In build 3.0 soob can hast value: 5
     // In future, old values 0 and 1 will no longer be used!
     // - Value 0 and 2 means that contains also operations
     // - Value 1 and 3 means that only contains operationblock info
     // - Value 2 and 3 means that contains protocol info prior to block number
     // - Value 4 means that is loading from storage using protocol v2 (so, includes always operations)
+    // - Value 5 means that is loading from storage using TAccountPreviousBlockInfo
     load_protocol_version := CT_PROTOCOL_1;
     if (soob in [0,2]) then FIsOnlyOperationBlock:=false
     else if (soob in [1,3]) then FIsOnlyOperationBlock:=true
     else if (soob in [4]) then begin
       FIsOnlyOperationBlock:=false;
       load_protocol_version := CT_PROTOCOL_2;
+    end else if (soob in [5]) then begin
+      FIsOnlyOperationBlock:=False;
+      load_protocol_version := CT_PROTOCOL_3;
     end else begin
       errors := 'Invalid value in protocol header! Found:'+inttostr(soob)+' - Check if your application version is Ok';
       exit;
     end;
 
-    if (soob in [2,3,4]) then begin
+    if (soob in [2,3,4,5]) then begin
       Stream.Read(FOperationBlock.protocol_version, Sizeof(FOperationBlock.protocol_version));
       Stream.Read(FOperationBlock.protocol_available, Sizeof(FOperationBlock.protocol_available));
     end else begin
@@ -1241,6 +1248,13 @@ begin
     Result := FOperationsHashTree.LoadOperationsHashTreeFromStream(Stream,LoadingFromStorage,load_protocol_version,FPreviousUpdatedBlocks,errors);
     if not Result then begin
       exit;
+    end;
+    If load_protocol_version>=CT_PROTOCOL_3 then begin
+      Result := FPreviousUpdatedBlocks.LoadFromStream(Stream);
+      If Not Result then begin
+        errors := 'Invalid PreviousUpdatedBlock stream';
+        Exit;
+      end;
     end;
     //
     FOperationBlock.fee := FOperationsHashTree.TotalFee;
@@ -1388,8 +1402,11 @@ begin
       else soob := 2;}
       soob := 2;
       if (SaveToStorage) then begin
+        {Old versions:
         // Introduced on protocol v2: soob = 4 when saving to storage
-        soob := 4;
+        soob := 4;}
+        // Introduced on protocol v3: soob = 5 when saving to storage
+        soob := 5; // V3 will always save PreviousUpdatedBlocks
       end;
     end;
     Stream.Write(soob,1);
@@ -1421,6 +1438,9 @@ begin
     }
     if (Not save_only_OperationBlock) then begin
       Result := FOperationsHashTree.SaveOperationsHashTreeToStream(Stream,SaveToStorage);
+      If (Result) And (SaveToStorage) And (soob=5) then begin
+        FPreviousUpdatedBlocks.SaveToStream(Stream);
+      end;
     end else Result := true;
   finally
     Unlock;
@@ -1835,7 +1855,8 @@ begin
       for i := 0 to l.Count - 1 do begin
         P := l[i];
         // Include to hash tree
-        TCrypto.DoSha256(FHashTree+P^.Op.Sha256,FHashTree);
+        // TCrypto.DoSha256(FHashTree+P^.Op.Sha256,FHashTree);  COMPILER BUG 2.1.6: Using FHashTree as a "out" param can be initialized prior to be updated first parameter!
+        FHashTree := TCrypto.DoSha256(FHashTree+P^.Op.Sha256);
       end;
     Finally
       FHashTreeOperations.UnlockList;
@@ -1919,8 +1940,8 @@ Var msCopy : TMemoryStream;
   h : TRawBytes;
   P : POperationHashTreeReg;
   PaccData : POperationsHashAccountsData;
-  i,npos : Integer;
-  auxs : AnsiString;
+  i,npos,iListSigners : Integer;
+  listSigners : TList;
 begin
   msCopy := TMemoryStream.Create;
   try
@@ -1933,35 +1954,41 @@ begin
     P^.Op.FPrevious_Signer_updated_block := op.Previous_Signer_updated_block;
     P^.Op.FPrevious_Destination_updated_block := op.FPrevious_Destination_updated_block;
     P^.Op.FPrevious_Seller_updated_block := op.FPrevious_Seller_updated_block;
-    P^.Op.FHasValidSignature:=op.FHasValidSignature;
-    P^.Op.FSignatureChecked:=op.FSignatureChecked;
-    h := op.Sha256;
+    h := FHashTree + op.Sha256;
     P^.Op.FBufferedSha256:=op.FBufferedSha256;
     P^.Op.tag := list.Count;
     // Improvement TOperationsHashTree speed 2.1.6
     // Include to hash tree (Only if CalcNewHashTree=True)
     If (CalcNewHashTree) And (Length(FHashTree)=32) then begin
-      TCrypto.DoSha256(FHashTree+h,FHashTree);
+      // TCrypto.DoSha256(FHashTree+op.Sha256,FHashTree);  COMPILER BUG 2.1.6: Using FHashTree as a "out" param can be initialized prior to be updated first parameter!
+      TCrypto.DoSha256(h,FHashTree);
     end;
     npos := list.Add(P);
-    If FindOrderedBySha(list,op.Sha256,i) then begin
-      // Is inserting a value already found!
-      auxs :=Format('MyListCount:%d OrderedBySha Pos:%d from %d Hash:%s PointsTo:%d',[list.Count,i,FListOrderedBySha256.Count,TCrypto.ToHexaString(Op.Sha256),PtrInt(FListOrderedBySha256[i])]);
-      TLog.NewLog(ltError,ClassName,'DEV ERROR 20180213-2 Inserting a duplicate Sha256! '+Op.ToString+' > '+auxs );
+    // Improvement: Will allow to add duplicate Operations, so add only first to orderedBySha
+    If Not FindOrderedBySha(list,op.Sha256,i) then begin
+      // Protection: Will add only once
+      FListOrderedBySha256.Insert(i,TObject(npos));
     end;
-    FListOrderedBySha256.Insert(i,TObject(npos));
     // Improvement TOperationsHashTree speed 2.1.6
     // Mantain an ordered Accounts list with data
-    If Not FindOrderedByAccountData(list,op.SignerAccount,i) then begin
-      New(PaccData);
-      PaccData^.account_number:=op.SignerAccount;
-      PaccData^.account_count:=0;
-      PaccData^.account_without_fee:=0;
-      FListOrderedByAccountsData.Insert(i,PaccData);
-    end else PaccData := FListOrderedByAccountsData[i];
-    Inc(PaccData^.account_count);
-    If op.OperationFee=0 then begin
-      Inc(PaccData^.account_without_fee);
+    listSigners := TList.Create;
+    try
+      op.SignerAccounts(listSigners);
+      for iListSigners:=0 to listSigners.Count-1 do begin
+        If Not FindOrderedByAccountData(list,PtrInt(listSigners[iListSigners]),i) then begin
+          New(PaccData);
+          PaccData^.account_number:=PtrInt(listSigners[iListSigners]);
+          PaccData^.account_count:=0;
+          PaccData^.account_without_fee:=0;
+          FListOrderedByAccountsData.Insert(i,PaccData);
+        end else PaccData := FListOrderedByAccountsData[i];
+        Inc(PaccData^.account_count);
+        If op.OperationFee=0 then begin
+          Inc(PaccData^.account_without_fee);
+        end;
+      end;
+    finally
+      listSigners.Free;
     end;
   finally
     msCopy.Free;
@@ -2125,6 +2152,7 @@ begin
   inherited;
   FOrphan := '';
   FReadOnly := false;
+  FIsMovingBlockchain := False;
 end;
 
 procedure TStorage.DeleteBlockChainBlocks(StartingDeleteBlock: Cardinal);
@@ -2181,6 +2209,7 @@ end;
 function TStorage.SaveBank: Boolean;
 begin
   Result := true;
+  If FIsMovingBlockchain then Exit;
   if Not TPCSafeBox.MustSafeBoxBeSaved(Bank.BlocksCount) then exit; // No save
   Try
     Result := DoSaveBank;
@@ -2225,7 +2254,6 @@ end;
 
 constructor TPCOperation.Create;
 begin
-  FSignatureChecked := False;
   FHasValidSignature := False;
   FBufferedSha256:='';
   InitializeData;
@@ -2258,6 +2286,12 @@ begin
       ms.Free;
     end;
   end else Raise Exception.Create('ERROR DEV 20170426-1'); // This should never happen, if good coded
+end;
+
+procedure TPCOperation.SignerAccounts(list: TList);
+begin
+  list.Clear;
+  list.Add(TObject(SignerAccount));
 end;
 
 class function TPCOperation.DecodeOperationHash(const operationHash: TRawBytes;
@@ -2336,15 +2370,11 @@ begin
   FPrevious_Seller_updated_block := 0;
   FHasValidSignature := false;
   FBufferedSha256:='';
-  FSignatureChecked := False;
 end;
 
-procedure TPCOperation.FillOperationResume(Block: Cardinal; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
+procedure TPCOperation.FillOperationResume(Block: Cardinal; getInfoForAllAccounts : Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume);
 begin
-  // XXXXXXXXXXXXXXXX
-  // TODO
-  // change from class function TPCOperation.OperationToOperationResume(Block : Cardinal; Operation: TPCOperation; Affected_account_number: Cardinal; var OperationResume: TOperationResume): Boolean;
-  // to here
+  //
 end;
 
 function TPCOperation.LoadFromNettransfer(Stream: TStream): Boolean;
@@ -2353,26 +2383,25 @@ begin
 end;
 
 function TPCOperation.LoadFromStorage(Stream: TStream; LoadProtocolVersion:Word; APreviousUpdatedBlocks : TAccountPreviousBlockInfo): Boolean;
-Var w : Word;
-  i : Integer;
-  cAccount,cPreviousUpdated : Cardinal;
 begin
   Result := false;
-  If LoadOpFromStream(Stream, LoadProtocolVersion>=2) then begin
-    if Stream.Size - Stream.Position<8 then exit;
-    Stream.Read(FPrevious_Signer_updated_block,Sizeof(FPrevious_Signer_updated_block));
-    Stream.Read(FPrevious_Destination_updated_block,Sizeof(FPrevious_Destination_updated_block));
-    if (LoadProtocolVersion=2) then begin
-      Stream.Read(FPrevious_Seller_updated_block,Sizeof(FPrevious_Seller_updated_block));
-    end;
-    if Assigned(APreviousUpdatedBlocks) then begin
-      // Add to previous list!
-      if SignerAccount>=0 then
-        APreviousUpdatedBlocks.UpdateIfLower(SignerAccount,FPrevious_Signer_updated_block);
-      if DestinationAccount>=0 then
-        APreviousUpdatedBlocks.UpdateIfLower(DestinationAccount,FPrevious_Destination_updated_block);
-      if SellerAccount>=0 then
-        APreviousUpdatedBlocks.UpdateIfLower(SellerAccount,FPrevious_Seller_updated_block);
+  If LoadOpFromStream(Stream, LoadProtocolVersion>=CT_PROTOCOL_2) then begin
+    If LoadProtocolVersion<CT_PROTOCOL_3 then begin
+      if Stream.Size - Stream.Position<8 then exit;
+      Stream.Read(FPrevious_Signer_updated_block,Sizeof(FPrevious_Signer_updated_block));
+      Stream.Read(FPrevious_Destination_updated_block,Sizeof(FPrevious_Destination_updated_block));
+      if (LoadProtocolVersion=CT_PROTOCOL_2) then begin
+        Stream.Read(FPrevious_Seller_updated_block,Sizeof(FPrevious_Seller_updated_block));
+      end;
+      if Assigned(APreviousUpdatedBlocks) then begin
+        // Add to previous list!
+        if SignerAccount>=0 then
+          APreviousUpdatedBlocks.UpdateIfLower(SignerAccount,FPrevious_Signer_updated_block);
+        if DestinationAccount>=0 then
+          APreviousUpdatedBlocks.UpdateIfLower(DestinationAccount,FPrevious_Destination_updated_block);
+        if SellerAccount>=0 then
+          APreviousUpdatedBlocks.UpdateIfLower(SellerAccount,FPrevious_Seller_updated_block);
+      end;
     end;
     Result := true;
   end;
@@ -2439,7 +2468,7 @@ begin
   end;
 end;
 
-class function TPCOperation.OperationToOperationResume(Block : Cardinal; Operation: TPCOperation; Affected_account_number: Cardinal; var OperationResume: TOperationResume): Boolean;
+class function TPCOperation.OperationToOperationResume(Block : Cardinal; Operation: TPCOperation; getInfoForAllAccounts : Boolean; Affected_account_number: Cardinal; var OperationResume: TOperationResume): Boolean;
 Var spayload : AnsiString;
   s : AnsiString;
 begin
@@ -2577,9 +2606,9 @@ begin
     end;
     CT_Op_MultiOperation : Begin
       OperationResume.isMultiOperation:=True;
-      OperationResume.OpSubtype := CT_OpSubtype_MultiOperation;
       OperationResume.OperationTxt := Operation.ToString;
-      OperationResume.Amount := Operation.OperationAmount * (-1);
+      OperationResume.Amount := Operation.OperationAmountByAccount(Affected_account_number);
+      OperationResume.Fee := 0;
       Result := True;
     end
   else Exit;
@@ -2588,11 +2617,11 @@ begin
   If TCrypto.IsHumanReadable(OperationResume.OriginalPayload) then OperationResume.PrintablePayload := OperationResume.OriginalPayload
   else OperationResume.PrintablePayload := TCrypto.ToHexaString(OperationResume.OriginalPayload);
   OperationResume.OperationHash:=TPCOperation.OperationHashValid(Operation,Block);
-  if (Block<CT_Protocol_Upgrade_v2_MinBlock) then begin
+  if (Block>0) And (Block<CT_Protocol_Upgrade_v2_MinBlock) then begin
     OperationResume.OperationHash_OLD:=TPCOperation.OperationHash_OLD(Operation,Block);
   end;
   OperationResume.valid := true;
-  Operation.FillOperationResume(Block,Affected_account_number,OperationResume);
+  Operation.FillOperationResume(Block,getInfoForAllAccounts,Affected_account_number,OperationResume);
 end;
 
 function TPCOperation.IsSignerAccount(account: Cardinal): Boolean;
@@ -2634,13 +2663,8 @@ begin
 end;
 
 function TPCOperation.SaveToStorage(Stream: TStream): Boolean;
-
 begin
   Result := SaveOpToStream(Stream,True);
-  Stream.Write(FPrevious_Signer_updated_block,Sizeof(FPrevious_Signer_updated_block));
-  Stream.Write(FPrevious_Destination_updated_block,SizeOf(FPrevious_Destination_updated_block));
-  Stream.Write(FPrevious_Seller_updated_block,SizeOf(FPrevious_Seller_updated_block));
-  Result := true;
 end;
 
 function TPCOperation.Sha256: TRawBytes;
@@ -2649,6 +2673,11 @@ begin
     FBufferedSha256 := TCrypto.DoSha256(GetBufferForOpHash(true));
   end;
   Result := FBufferedSha256;
+end;
+
+function TPCOperation.OperationAmountByAccount(account: Cardinal): Int64;
+begin
+  Result := 0;
 end;
 
 { TOperationsResumeList }
